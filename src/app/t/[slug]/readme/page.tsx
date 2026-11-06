@@ -2,9 +2,9 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { ReadmeEditor } from "@/components/teams/readme-editor";
 import { TeamHeader } from "@/components/teams/team-header";
-import { Card, PageSkeleton } from "@/components/ui";
+import { Card, EmptyState, PageSkeleton } from "@/components/ui";
 import { prisma } from "@/lib/db";
-import { README_NAME } from "@/lib/files";
+import { README_MAX_CHARS, README_NAME, formatBytes } from "@/lib/files";
 import { canAccessFile, canWriteFiles } from "@/lib/permissions";
 import { requireUser } from "@/lib/session";
 import { getBlob } from "@/lib/storage";
@@ -29,6 +29,20 @@ async function EditReadme({ params }: { params: PageProps<"/t/[slug]/readme">["p
   });
   // A restricted README can't be read or overwritten by people outside its level.
   if (file && !canAccessFile(view.team.visibility, view.role, file.access)) notFound();
+  // Only load READMEs small enough to save again (and to fit in one page response).
+  if (file && file.size > README_MAX_CHARS) {
+    return (
+      <div className="space-y-6">
+        <TeamHeader view={view} current="readme" />
+        <Card>
+          <EmptyState>
+            This README is {formatBytes(file.size)}, too large to edit here (the limit is about 100 KB).
+            Upload a smaller README.md from the Files list instead.
+          </EmptyState>
+        </Card>
+      </div>
+    );
+  }
   let initial = `# ${view.team.name}\n\n${view.team.description}\n`;
   if (file) {
     try {

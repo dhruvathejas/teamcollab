@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/db";
 import { canAccessFile, canViewTeam } from "@/lib/permissions";
 import { getCurrentUser } from "@/lib/session";
-import { getBlob } from "@/lib/storage";
+import { downloadResponse } from "@/lib/storage";
 import { getRole } from "@/lib/teams";
 
 // Download a team file, subject to the team's visibility and the file's own
-// access level (canAccessFile). Always served as an attachment so uploaded
-// HTML/SVG can't run on this origin.
+// access level (canAccessFile). Disk storage streams the bytes as an
+// attachment; Blob storage redirects to a one-minute presigned URL on Vercel's
+// blob domain. Either way uploaded HTML/SVG can't run on this origin.
 export async function GET(_request: Request, ctx: RouteContext<"/api/files/[fileId]">) {
   const { fileId } = await ctx.params;
   const file = await prisma.teamFile.findUnique({
@@ -26,20 +27,5 @@ export async function GET(_request: Request, ctx: RouteContext<"/api/files/[file
     }
   }
 
-  let data: Buffer;
-  try {
-    data = await getBlob(file.storageKey);
-  } catch {
-    return new Response("File content is missing", { status: 410 });
-  }
-
-  return new Response(new Uint8Array(data), {
-    headers: {
-      "Content-Type": "application/octet-stream",
-      "Content-Length": String(data.byteLength),
-      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-      "X-Content-Type-Options": "nosniff",
-      "Cache-Control": "private, no-store",
-    },
-  });
+  return downloadResponse(file.storageKey, file.name);
 }

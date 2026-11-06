@@ -104,3 +104,17 @@ describe("safeNext dot segments", () => {
     expect(safeNext("/t/./acme")).toBe("/t/acme");
   });
 });
+
+describe("NUL characters", () => {
+  it("are stripped from free text before it reaches Postgres", () => {
+    const r = createTeamSchema.safeParse({
+      name: "Open\u0000 Robotics",
+      slug: "open-robotics",
+      description: "a\u0000b",
+      license: "MIT",
+      visibility: "PUBLIC",
+      withReadme: false,
+    });
+    expect(r.success && [r.data.name, r.data.description]).toEqual(["Open Robotics", "ab"]);
+  });
+});

@@ -27,7 +27,7 @@ import {
   canWriteFiles,
 } from "@/lib/permissions";
 import { getCurrentUser } from "@/lib/session";
-import { getBlob } from "@/lib/storage";
+import { blobNamespace, getBlob, storageDriver } from "@/lib/storage";
 import { getTeamForViewer, type TeamView } from "@/lib/teams";
 
 export default function TeamPage({ params }: PageProps<"/t/[slug]">) {
@@ -123,7 +123,17 @@ async function Files({ view, userId }: { view: TeamView; userId?: string }) {
     <Card>
       <CardHeader
         title={`Files (${files.length})`}
-        action={writable ? <FileUploader teamId={team.id} allowedLevels={accessLevelsFor(role)} /> : undefined}
+        action={
+          writable && userId ? (
+            <FileUploader
+              teamId={team.id}
+              userId={userId}
+              allowedLevels={accessLevelsFor(role)}
+              direct={storageDriver() === "blob"}
+              namespace={blobNamespace()}
+            />
+          ) : undefined
+        }
       />
       {files.length === 0 ? (
         <EmptyState>{writable ? "No files yet. Upload the first one." : "No files yet."}</EmptyState>

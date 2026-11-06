@@ -3,9 +3,28 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FILE_ACCESS_LABELS, MAX_FILE_BYTES } from "@/lib/files";
+import { buildUploadPath } from "@/lib/upload-paths";
 import { buttonStyles } from "../ui";
 
-export function FileUploader({ teamId, allowedLevels }: { teamId: string; allowedLevels: string[] }) {
+/**
+ * Uploads files to a team. With `direct` (Vercel Blob storage) the browser sends
+ * the bytes straight to Blob and then asks the server to record the file;
+ * otherwise (local disk) it posts the file to the server.
+ */
+export function FileUploader({
+  teamId,
+  userId,
+  allowedLevels,
+  direct,
+  namespace,
+}: {
+  teamId: string;
+  userId: string;
+  allowedLevels: string[];
+  direct: boolean;
+  /** Blob pathname namespace for this environment (direct uploads only). */
+  namespace: string;
+}) {
   const router = useRouter();
   const input = useRef<HTMLInputElement>(null);
   const accessSelect = useRef<HTMLSelectElement>(null);
@@ -27,23 +46,52 @@ export function FileUploader({ teamId, allowedLevels }: { teamId: string; allowe
         continue;
       }
       setBusy(`Uploading ${file.name}…`);
-      const body = new FormData();
-      body.append("file", file);
-      body.append("access", accessSelect.current?.value ?? "TEAM");
+      const access = accessSelect.current?.value ?? "TEAM";
       try {
-        const res = await fetch(`/api/teams/${teamId}/files`, { method: "POST", body });
+        const res = direct ? await uploadDirect(file, access) : await uploadViaServer(file, access);
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           problems.push(`${file.name}: ${data.error ?? `upload failed (${res.status}).`}`);
         }
-      } catch {
-        problems.push(`${file.name}: network error.`);
+      } catch (err) {
+        problems.push(`${file.name}: ${describeError(err)}`);
       }
     }
     setBusy(null);
     setErrors(problems);
     if (input.current) input.current.value = "";
     router.refresh();
+  }
+
+  function uploadViaServer(file: File, access: string): Promise<Response> {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("access", access);
+    return fetch(`/api/teams/${teamId}/files`, { method: "POST", body });
+  }
+
+  async function uploadDirect(file: File, access: string): Promise<Response> {
+    const { upload } = await import("@vercel/blob/client");
+    const pathname = buildUploadPath(namespace, teamId, userId, file.name, crypto.randomUUID());
+    try {
+      await upload(pathname, file, {
+        access: "private",
+        handleUploadUrl: `/api/teams/${teamId}/files/blob-token`,
+        contentType: file.type || undefined,
+        multipart: file.size > 5 * 1024 * 1024,
+      });
+    } catch (err) {
+      // The SDK reports a refused token as a generic "Failed to retrieve the client token".
+      if (err instanceof Error && /client token/i.test(err.message)) {
+        throw new Error("upload refused. Make sure you're still signed in and a member of this team.");
+      }
+      throw err;
+    }
+    return fetch(`/api/teams/${teamId}/files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pathname, name: file.name, access }),
+    });
   }
 
   return (
@@ -83,4 +131,10 @@ export function FileUploader({ teamId, allowedLevels }: { teamId: string; allowe
       )}
     </div>
   );
+}
+
+function describeError(err: unknown): string {
+  // fetch() failures are TypeErrors with browser-specific text ("Failed to fetch", "Load failed"…).
+  if (err instanceof TypeError || !(err instanceof Error) || !err.message) return "network error.";
+  return err.message.replace(/^Vercel Blob:\s*/, "").replace(/\s+/g, " ");
 }

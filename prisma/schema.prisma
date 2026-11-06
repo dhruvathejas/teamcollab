@@ -1,13 +1,16 @@
-// TeamCollab data model.
-// SQLite for local development; switch `provider` to "postgresql" for production.
+// TeamCollab data model (PostgreSQL).
+// On Vercel the Neon integration provides DATABASE_URL (pooled) and
+// DATABASE_URL_UNPOOLED (direct, used for migrations). Locally both point at
+// the database from `npx prisma dev`.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 // ---------- Users & authentication ----------
@@ -158,8 +161,9 @@ model TeamFile {
   name         String
   size         Int
   mimeType     String
-  // Path of the blob relative to the storage root.
-  storageKey   String
+  // Where the bytes live: a disk path under STORAGE_DIR, or a Vercel Blob
+  // pathname. Unique, so one blob can never back two files.
+  storageKey   String   @unique
   // Who may open it: "TEAM" (anyone who can see the team) | "MEMBERS" | "ADMINS"
   // (owner and admins). See canAccessFile in src/lib/permissions.ts.
   access       String   @default("TEAM")

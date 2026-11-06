@@ -12,10 +12,12 @@
     "db:migrate": "dotenv --no-expand -e .env.local -- prisma migrate dev",
     "postinstall": "prisma generate",
     "db:deploy": "dotenv --no-expand -e .env.local -- prisma migrate deploy",
-    "db:studio": "dotenv --no-expand -e .env.local -- prisma studio"
+    "db:studio": "dotenv --no-expand -e .env.local -- prisma studio",
+    "db:local": "prisma dev --name teamcollab"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@vercel/blob": "^2.8.2",
     "bcryptjs": "^3.0.3",
     "next": "16.4.5",
     "next-auth": "^5.0.0-beta.32",
