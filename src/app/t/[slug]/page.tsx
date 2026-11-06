@@ -9,14 +9,23 @@ import {
   respondToInvite,
 } from "@/app/actions/teams";
 import { SubmitButton } from "@/components/submit-button";
+import { FileAccessSelect } from "@/components/teams/file-access-select";
 import { FileUploader } from "@/components/teams/file-uploader";
 import { JoinRequestForm } from "@/components/teams/join-request-form";
 import { TeamHeader } from "@/components/teams/team-header";
 import { Avatar, Badge, ButtonLink, Card, CardHeader, EmptyState, PageSkeleton } from "@/components/ui";
 import { prisma } from "@/lib/db";
-import { formatBytes, isReadme } from "@/lib/files";
+import { FILE_ACCESS_LABELS, formatBytes, isReadme } from "@/lib/files";
 import { getLicense } from "@/lib/licenses";
-import { canDeleteFile, canLeave, canRequestToJoin, canWriteFiles } from "@/lib/permissions";
+import {
+  accessLevelsFor,
+  canAccessFile,
+  canDeleteFile,
+  canLeave,
+  canRequestToJoin,
+  canSetFileAccess,
+  canWriteFiles,
+} from "@/lib/permissions";
 import { getCurrentUser } from "@/lib/session";
 import { getBlob } from "@/lib/storage";
 import { getTeamForViewer, type TeamView } from "@/lib/teams";
@@ -114,30 +123,55 @@ async function Files({ view, userId }: { view: TeamView; userId?: string }) {
     <Card>
       <CardHeader
         title={`Files (${files.length})`}
-        action={writable ? <FileUploader teamId={team.id} /> : undefined}
+        action={writable ? <FileUploader teamId={team.id} allowedLevels={accessLevelsFor(role)} /> : undefined}
       />
       {files.length === 0 ? (
         <EmptyState>{writable ? "No files yet. Upload the first one." : "No files yet."}</EmptyState>
       ) : (
         <ul className="divide-y divide-line">
-          {files.map((f) => (
-            <li key={f.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
-              <a href={`/api/files/${f.id}`} className="min-w-0 flex-1 truncate font-medium hover:text-accent" download>
-                {f.name}
-              </a>
-              <span className="hidden text-xs text-muted sm:inline">
-                {f.uploadedBy?.username ? `@${f.uploadedBy.username} · ` : ""}
-                {f.updatedAt.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })}
-              </span>
-              <span className="w-16 text-right text-xs text-muted">{formatBytes(f.size)}</span>
-              {userId && canDeleteFile(role, userId, f.uploadedById) && (
-                <form action={deleteFile}>
-                  <input type="hidden" name="fileId" value={f.id} />
-                  <SubmitButton variant="ghost" className="!px-2 !py-1 text-xs" pendingText="…">Delete</SubmitButton>
-                </form>
-              )}
-            </li>
-          ))}
+          {files.map((f) => {
+            const open = canAccessFile(team.visibility, role, f.access);
+            // Levels this viewer could switch the file to (besides its current one).
+            const levels = userId
+              ? accessLevelsFor(role).filter(
+                  (l) => l === f.access || canSetFileAccess(role, userId, f.uploadedById, team.visibility, f.access, l),
+                )
+              : [];
+            const canChange = levels.some((l) => l !== f.access);
+            return (
+              <li key={f.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 text-sm">
+                {open ? (
+                  <a href={`/api/files/${f.id}`} className="min-w-0 flex-1 truncate font-medium hover:text-accent" download>
+                    {f.name}
+                  </a>
+                ) : (
+                  <span className="min-w-0 flex-1 truncate text-muted" title="You don't have access to this file">
+                    <span aria-hidden>🔒 </span>{f.name}
+                  </span>
+                )}
+                {canChange ? (
+                  <FileAccessSelect fileId={f.id} fileName={f.name} value={f.access} options={levels} />
+                ) : (
+                  f.access !== "TEAM" && (
+                    <Badge tone={open ? "accent" : "neutral"}>
+                      {open ? "" : "Restricted · "}{FILE_ACCESS_LABELS[f.access] ?? f.access}
+                    </Badge>
+                  )
+                )}
+                <span className="hidden text-xs text-muted sm:inline">
+                  {f.uploadedBy?.username ? `@${f.uploadedBy.username} · ` : ""}
+                  {f.updatedAt.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })}
+                </span>
+                <span className="w-16 text-right text-xs text-muted">{formatBytes(f.size)}</span>
+                {userId && canDeleteFile(role, userId, f.uploadedById, team.visibility, f.access) && (
+                  <form action={deleteFile}>
+                    <input type="hidden" name="fileId" value={f.id} />
+                    <SubmitButton variant="ghost" className="!px-2 !py-1 text-xs" pendingText="…">Delete</SubmitButton>
+                  </form>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
       <p className="border-t border-line px-5 py-2.5 text-xs text-muted">
@@ -154,9 +188,13 @@ const README_PREVIEW_BYTES = 200_000;
 
 async function Readme({ view }: { view: TeamView }) {
   const { team, role } = view;
-  const files = await prisma.teamFile.findMany({ where: { teamId: team.id }, select: { name: true, storageKey: true } });
+  const files = await prisma.teamFile.findMany({
+    where: { teamId: team.id },
+    select: { name: true, storageKey: true, access: true },
+  });
   const readme = files.find((f) => isReadme(f.name));
-  const editLink = canWriteFiles(role) ? (
+  const readable = !readme || canAccessFile(team.visibility, role, readme.access);
+  const editLink = canWriteFiles(role) && readable ? (
     <Link href={`/t/${team.slug}/readme`} className="text-sm text-accent hover:underline">
       {readme ? "Edit" : "Add README"}
     </Link>
@@ -169,6 +207,17 @@ async function Readme({ view }: { view: TeamView }) {
         <EmptyState>Add a README to tell people what this team is about.</EmptyState>
       </Card>
     ) : null;
+  }
+
+  if (!readable) {
+    return (
+      <Card>
+        <CardHeader title="README.md" />
+        <EmptyState>
+          <span aria-hidden>🔒 </span>This README is visible to {(FILE_ACCESS_LABELS[readme.access] ?? readme.access).toLowerCase()} only.
+        </EmptyState>
+      </Card>
+    );
   }
 
   let text: string;

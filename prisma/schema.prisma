@@ -160,6 +160,9 @@ model TeamFile {
   mimeType     String
   // Path of the blob relative to the storage root.
   storageKey   String
+  // Who may open it: "TEAM" (anyone who can see the team) | "MEMBERS" | "ADMINS"
+  // (owner and admins). See canAccessFile in src/lib/permissions.ts.
+  access       String   @default("TEAM")
   uploadedById String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

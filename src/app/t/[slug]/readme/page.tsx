@@ -5,7 +5,7 @@ import { TeamHeader } from "@/components/teams/team-header";
 import { Card, PageSkeleton } from "@/components/ui";
 import { prisma } from "@/lib/db";
 import { README_NAME } from "@/lib/files";
-import { canWriteFiles } from "@/lib/permissions";
+import { canAccessFile, canWriteFiles } from "@/lib/permissions";
 import { requireUser } from "@/lib/session";
 import { getBlob } from "@/lib/storage";
 import { getTeamForViewer } from "@/lib/teams";
@@ -27,6 +27,8 @@ async function EditReadme({ params }: { params: PageProps<"/t/[slug]/readme">["p
   const file = await prisma.teamFile.findUnique({
     where: { teamId_name: { teamId: view.team.id, name: README_NAME } },
   });
+  // A restricted README can't be read or overwritten by people outside its level.
+  if (file && !canAccessFile(view.team.visibility, view.role, file.access)) notFound();
   let initial = `# ${view.team.name}\n\n${view.team.description}\n`;
   if (file) {
     try {

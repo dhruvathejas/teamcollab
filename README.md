@@ -10,7 +10,10 @@ A way for teams with ambitions to collaborate.
 - **Joining**: request to join any public team, or accept an invite from any team.
   Owners and admins review requests and send invites.
 - **Files**: members upload, download and delete files (up to 10 MB each) and edit
-  the README, which is rendered on the team page.
+  the README, which is rendered on the team page. Each file can be opened by
+  everyone who can see the team (the default), by team members only, or by the owner
+  and admins only. Restricted files stay listed with a lock, but can't be opened,
+  replaced or deleted by people outside their level.
 
 ## Roles
 
@@ -21,6 +24,7 @@ A way for teams with ambitions to collaborate.
 | Download a private team's files | ✓ | ✓ | ✓ | – |
 | Upload files, edit the README | ✓ | ✓ | ✓ | – |
 | Delete any file (members: only their own) | ✓ | ✓ | own | – |
+| Restrict a file to team members or to the owner & admins | ✓ | ✓ | own files; not "Owner & admins" | – |
 | Invite people, approve/reject join requests, edit description | ✓ | ✓ | – | – |
 | Remove members | ✓ | members only | – | – |
 | Promote/demote admins, change name/license/visibility, delete team | ✓ | – | – | – |

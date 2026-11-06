@@ -1,5 +1,11 @@
 // Helpers for team files that are safe to use on client and server.
 
+export const FILE_ACCESS_LABELS: Record<string, string> = {
+  TEAM: "Everyone who can see the team",
+  MEMBERS: "Team members",
+  ADMINS: "Owner & admins",
+};
+
 export const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
 export const README_NAME = "README.md";
 

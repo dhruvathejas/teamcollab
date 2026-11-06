@@ -13,14 +13,16 @@ import {
   canManageTeam,
   canRemoveMember,
   canRequestToJoin,
+  canSetFileAccess,
   canWriteFiles,
+  isFileAccess,
   isOwner,
   isRole,
   type Role,
 } from "@/lib/permissions";
 import { requireUser } from "@/lib/session";
 import { deleteBlob, deleteTeamBlobs } from "@/lib/storage";
-import { defaultReadme, writeTeamFile } from "@/lib/team-files";
+import { FileLockedError, defaultReadme, writeTeamFile } from "@/lib/team-files";
 import { getRole } from "@/lib/teams";
 import {
   createTeamSchema,
@@ -97,6 +99,8 @@ export async function createTeam(_prev: FormState, formData: FormData): Promise<
       data: new TextEncoder().encode(text),
       mimeType: "text/markdown",
       uploadedById: user.id,
+      actorRole: "OWNER",
+      visibility: data.visibility,
     });
   }
 
@@ -305,10 +309,24 @@ export async function leaveTeam(formData: FormData) {
 export async function deleteFile(formData: FormData) {
   const file = await prisma.teamFile.findUnique({ where: { id: str(formData, "fileId") } });
   if (!file) return refresh();
-  const { user, role } = await teamAndRole(file.teamId);
-  if (!canDeleteFile(role, user.id, file.uploadedById)) throw new Error("Not allowed.");
+  const { user, team, role } = await teamAndRole(file.teamId);
+  if (!canDeleteFile(role, user.id, file.uploadedById, team.visibility, file.access)) throw new Error("Not allowed.");
   await prisma.teamFile.delete({ where: { id: file.id } });
   await deleteBlob(file.storageKey);
+  refresh();
+}
+
+/** Change who can open a file (uploader, owner or admins; see canSetFileAccess). */
+export async function setFileAccess(formData: FormData) {
+  const file = await prisma.teamFile.findUnique({ where: { id: str(formData, "fileId") } });
+  const next = str(formData, "access");
+  if (!file || !isFileAccess(next) || file.access === next) return refresh();
+  const { user, team, role } = await teamAndRole(file.teamId);
+  if (!canSetFileAccess(role, user.id, file.uploadedById, team.visibility, file.access, next)) {
+    throw new Error("Not allowed.");
+  }
+  // Guard on the old level so a concurrent change isn't silently overwritten.
+  await prisma.teamFile.updateMany({ where: { id: file.id, access: file.access }, data: { access: next } });
   refresh();
 }
 
@@ -321,12 +339,21 @@ export async function saveReadme(_prev: FormState, formData: FormData): Promise<
   if (content.length > 100_000) {
     return { fieldErrors: { content: "README is too long (100,000 characters max)." }, values: { content } };
   }
-  await writeTeamFile({
-    teamId: team.id,
-    name: README_NAME,
-    data: new TextEncoder().encode(content),
-    mimeType: "text/markdown",
-    uploadedById: user.id,
-  });
+  try {
+    await writeTeamFile({
+      teamId: team.id,
+      name: README_NAME,
+      data: new TextEncoder().encode(content),
+      mimeType: "text/markdown",
+      uploadedById: user.id,
+      actorRole: role!,
+      visibility: team.visibility,
+    });
+  } catch (err) {
+    if (err instanceof FileLockedError) {
+      return { error: "The README is restricted; you can't edit it.", values: { content } };
+    }
+    throw err;
+  }
   redirect(`/t/${team.slug}`);
 }
