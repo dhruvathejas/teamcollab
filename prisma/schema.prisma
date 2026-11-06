@@ -1,0 +1,174 @@
+// TeamCollab data model.
+// SQLite for local development; switch `provider` to "postgresql" for production.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Users & authentication ----------
+
+model User {
+  id            String    @id @default(cuid())
+  username      String    @unique
+  name          String?
+  // Verified at sign-up with an emailed code; every login sends a code here too.
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String
+  createdAt     DateTime  @default(now())
+
+  memberships     Membership[]
+  ownedTeams      Team[]           @relation("TeamOwner")
+  joinRequests    JoinRequest[]    @relation("JoinRequester")
+  reviewedJoins   JoinRequest[]    @relation("JoinReviewer")
+  invitesReceived Invite[]         @relation("Invitee")
+  invitesSent     Invite[]         @relation("Inviter")
+  uploadedFiles   TeamFile[]
+  challenges      EmailChallenge[]
+}
+
+// A pending two-factor step: a 6-digit code emailed after the password check
+// (LOGIN) or after filling in the sign-up form (SIGNUP). The browser holds a
+// random token in an httpOnly cookie; only its hash is stored here.
+model EmailChallenge {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  // "LOGIN" | "SIGNUP"
+  kind       String
+  // LOGIN only.
+  userId     String?
+  // Where the code is sent.
+  email      String
+  // SIGNUP only: JSON {username, name, passwordHash}. The user row is created
+  // only once the code is verified, so unverified sign-ups can't squat names.
+  payload    String?
+  // HMAC of the current code; replaced when a new code is sent.
+  codeHash   String
+  attempts   Int       @default(0)
+  sendCount  Int       @default(1)
+  lastSentAt DateTime  @default(now())
+  expiresAt  DateTime
+  // Set when the correct code is entered; the session is issued right after.
+  verifiedAt DateTime?
+  // Set when a session has been issued from this challenge (single use).
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([email, createdAt])
+}
+
+// Fixed-window counters for rate limiting (see src/lib/rate-limit.ts).
+model RateLimit {
+  key         String   @id
+  count       Int      @default(0)
+  windowStart DateTime @default(now())
+}
+
+// ---------- Teams ----------
+
+model Team {
+  id          String   @id @default(cuid())
+  name        String
+  // URL-safe unique handle, e.g. /t/open-robotics
+  slug        String   @unique
+  description String   @default("")
+  // SPDX identifier, see src/lib/licenses.ts
+  license     String
+  // "PUBLIC" | "PRIVATE"
+  visibility  String   @default("PUBLIC")
+  ownerId     String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner        User          @relation("TeamOwner", fields: [ownerId], references: [id])
+  memberships  Membership[]
+  joinRequests JoinRequest[]
+  invites      Invite[]
+  files        TeamFile[]
+
+  @@index([visibility])
+}
+
+model Membership {
+  id       String   @id @default(cuid())
+  teamId   String
+  userId   String
+  // "OWNER" | "ADMIN" | "MEMBER"
+  role     String   @default("MEMBER")
+  joinedAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+model JoinRequest {
+  id           String    @id @default(cuid())
+  teamId       String
+  userId       String
+  message      String    @default("")
+  // "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED"
+  status       String    @default("PENDING")
+  reviewedById String?
+  createdAt    DateTime  @default(now())
+  reviewedAt   DateTime?
+
+  team       Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user       User  @relation("JoinRequester", fields: [userId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("JoinReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([teamId, status])
+  @@index([userId, status])
+}
+
+model Invite {
+  id          String    @id @default(cuid())
+  teamId      String
+  inviteeId   String
+  inviterId   String
+  // "PENDING" | "ACCEPTED" | "DECLINED" | "REVOKED"
+  status      String    @default("PENDING")
+  createdAt   DateTime  @default(now())
+  respondedAt DateTime?
+
+  team    Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  invitee User @relation("Invitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+  inviter User @relation("Inviter", fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@index([inviteeId, status])
+  @@index([teamId, status])
+}
+
+// ---------- Team project files ----------
+
+model TeamFile {
+  id           String   @id @default(cuid())
+  teamId       String
+  // Display name, unique within a team. Uploading the same name replaces the file.
+  name         String
+  size         Int
+  mimeType     String
+  // Path of the blob relative to the storage root.
+  storageKey   String
+  // Who may open it: "TEAM" (anyone who can see the team) | "MEMBERS" | "ADMINS"
+  // (owner and admins). See canAccessFile in src/lib/permissions.ts.
+  access       String   @default("TEAM")
+  uploadedById String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  team       Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  uploadedBy User? @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@unique([teamId, name])
+}
