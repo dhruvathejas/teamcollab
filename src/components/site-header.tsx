@@ -45,6 +45,11 @@ async function UserNav() {
 
   return (
     <>
+      {user.siteAdmin && (
+        <Link href="/admin" className="rounded-md px-2 py-1 text-sm font-medium text-accent hover:bg-surface-2">
+          Admin
+        </Link>
+      )}
       <ButtonLink href="/teams/new" variant="secondary" className="hidden sm:inline-flex">
         New team
       </ButtonLink>

@@ -13,6 +13,7 @@ import {
   verifyChallengeCode,
 } from "@/lib/challenges";
 import { prisma } from "@/lib/db";
+import { accountStatus, blockedMessage } from "@/lib/moderation";
 import { normalizeCode } from "@/lib/otp";
 import { clientIp, consume, limits } from "@/lib/rate-limit";
 import { safeNext } from "@/lib/session";
@@ -88,7 +89,15 @@ export async function login(_prev: FormState, formData: FormData): Promise<FormS
   const user = username.success
     ? await prisma.user.findUnique({
         where: { username: username.data },
-        select: { id: true, username: true, email: true, passwordHash: true },
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          passwordHash: true,
+          bannedAt: true,
+          suspendedUntil: true,
+          moderationReason: true,
+        },
       })
     : null;
   const passwordOk = await bcrypt.compare(
@@ -96,6 +105,9 @@ export async function login(_prev: FormState, formData: FormData): Promise<FormS
     user?.passwordHash ?? DUMMY_HASH,
   );
   if (!user || !passwordOk) return { error: "Incorrect username or password.", values };
+  // Only revealed after the correct password, so it doesn't leak who is banned.
+  const blocked = blockedMessage(accountStatus(user));
+  if (blocked) return { error: blocked, values };
 
   try {
     await startChallenge({ kind: "LOGIN", email: user.email, username: user.username, userId: user.id });

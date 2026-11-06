@@ -25,6 +25,13 @@ model User {
   passwordHash  String
   createdAt     DateTime  @default(now())
 
+  // Moderation by site admins (see src/lib/moderation.ts).
+  bannedAt           DateTime?
+  suspendedUntil     DateTime?
+  moderationReason   String?
+  // Sessions that began before this are rejected ("sign out everywhere").
+  sessionsValidAfter DateTime?
+
   memberships     Membership[]
   ownedTeams      Team[]           @relation("TeamOwner")
   joinRequests    JoinRequest[]    @relation("JoinRequester")

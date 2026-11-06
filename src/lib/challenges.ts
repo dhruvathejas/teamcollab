@@ -1,6 +1,7 @@
 import "server-only";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/db";
+import { accountStatus } from "@/lib/moderation";
 import { codeEmail, sendEmail } from "@/lib/email";
 import { consume, consumeEmailBudget, isExhausted, limits, pruneRateLimits, refund } from "@/lib/rate-limit";
 import {
@@ -267,8 +268,13 @@ export async function redeemChallenge(token: string): Promise<string | null> {
 
     if (c.kind === "LOGIN") {
       if (!c.userId) return null;
-      const user = await tx.user.findUnique({ where: { id: c.userId }, select: { id: true } });
-      return user?.id ?? null;
+      const user = await tx.user.findUnique({
+        where: { id: c.userId },
+        select: { id: true, bannedAt: true, suspendedUntil: true, moderationReason: true },
+      });
+      // Banned or suspended after the code was sent: no session.
+      if (!user || accountStatus(user).state !== "active") return null;
+      return user.id;
     }
 
     const p = JSON.parse(c.payload ?? "null") as SignupPayload | null;

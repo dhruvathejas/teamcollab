@@ -31,11 +31,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     jwt({ token, user }) {
-      if (user?.id) token.sub = user.id;
+      if (user?.id) {
+        token.sub = user.id;
+        // When this session began; lets an admin end all of a user's sessions.
+        token.loginAt = Date.now();
+      }
       return token;
     },
     session({ session, token }) {
       if (token.sub) session.user.id = token.sub;
+      if (typeof token.loginAt === "number") session.loginAt = token.loginAt;
       return session;
     },
   },
