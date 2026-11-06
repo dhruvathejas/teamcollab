@@ -2,6 +2,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { pickClientIp } from "@/lib/client-ip";
 import { mailboxKey } from "@/lib/mailbox";
 
 // Fixed-window counters stored in the database, so limits hold across
@@ -67,10 +68,7 @@ export async function isExhausted({ key, max, windowMs }: Limit): Promise<boolea
  * can choose their own value, and only the global limits still apply.
  */
 export async function clientIp(): Promise<string> {
-  const h = await headers();
-  const chain = h.get("x-forwarded-for")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
-  // Cap the length: the value may be client-chosen and becomes part of a key.
-  return (chain.at(-1) ?? h.get("x-real-ip") ?? "unknown").slice(0, 64);
+  return pickClientIp(await headers(), process.env.CLIENT_IP_HEADER);
 }
 
 
