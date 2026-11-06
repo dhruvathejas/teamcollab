@@ -8,6 +8,12 @@ const RESERVED_USERNAMES = new Set([
   "teams", "new", "verify", "invites", "root", "support", "help",
 ]);
 
+/** Postgres text columns can't hold U+0000, so it is removed from free text. */
+export function stripNul(s: string): string {
+  return s.replace(/\u0000/g, "");
+}
+const text = () => z.string().transform(stripNul).pipe(z.string());
+
 export const usernameSchema = z
   .string()
   .trim()
@@ -36,7 +42,7 @@ export const signupSchema = z
   .object({
     username: usernameSchema,
     email: emailSchema,
-    name: z.string().trim().max(80).optional().default(""),
+    name: text().pipe(z.string().trim().max(80)).optional().default(""),
     password: passwordSchema,
     confirmPassword: z.string(),
   })
@@ -63,16 +69,15 @@ export const licenseSchema = z
   .string()
   .refine(isLicenseId, "Choose a license from the list.");
 
-export const teamNameSchema = z
-  .string()
-  .trim()
+export const teamNameSchema = text()
+  .pipe(z.string())
+  .pipe(z.string().trim()
   .min(2, "Team name must be at least 2 characters.")
-  .max(60, "Team name must be at most 60 characters.");
+  .max(60, "Team name must be at most 60 characters."));
 
-export const descriptionSchema = z
-  .string()
-  .trim()
-  .max(500, "Description must be at most 500 characters.");
+export const descriptionSchema = text().pipe(
+  z.string().trim().max(500, "Description must be at most 500 characters."),
+);
 
 export const createTeamSchema = z.object({
   name: teamNameSchema,

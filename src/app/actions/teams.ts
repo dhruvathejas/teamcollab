@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { refresh } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { README_NAME } from "@/lib/files";
+import { README_MAX_CHARS, README_NAME } from "@/lib/files";
 import { getLicense } from "@/lib/licenses";
 import {
   canChangeRole,
@@ -33,6 +33,7 @@ import {
   usernameSchema,
   visibilitySchema,
 } from "@/lib/validation";
+import { stripNul } from "@/lib/validation";
 import { pickValues, type FormState } from "./types";
 
 function isUniqueViolation(err: unknown): boolean {
@@ -146,7 +147,8 @@ export async function deleteTeam(_prev: FormState, formData: FormData): Promise<
     return { fieldErrors: { confirm: `Type "${team.slug}" to confirm.` } };
   }
   await prisma.team.delete({ where: { id: team.id } });
-  await deleteTeamBlobs(team.id);
+  // The team is gone; removing its files is best effort (a failure leaves orphans, not an error page).
+  await deleteTeamBlobs(team.id).catch((err) => console.error("deleteTeam: blob cleanup failed", err));
   redirect("/");
 }
 
@@ -165,7 +167,7 @@ export async function requestToJoin(_prev: FormState, formData: FormData): Promi
   if (existing) return { error: "Your request is already pending." };
 
   await prisma.joinRequest.create({
-    data: { teamId: team.id, userId: user.id, message: str(formData, "message").trim().slice(0, 500) },
+    data: { teamId: team.id, userId: user.id, message: stripNul(str(formData, "message")).trim().slice(0, 500) },
   });
   refresh();
   return { success: "Request sent. The team's owner or admins will review it." };
@@ -312,7 +314,7 @@ export async function deleteFile(formData: FormData) {
   const { user, team, role } = await teamAndRole(file.teamId);
   if (!canDeleteFile(role, user.id, file.uploadedById, team.visibility, file.access)) throw new Error("Not allowed.");
   await prisma.teamFile.delete({ where: { id: file.id } });
-  await deleteBlob(file.storageKey);
+  await deleteBlob(file.storageKey).catch((err) => console.error("deleteFile: blob cleanup failed", err));
   refresh();
 }
 
@@ -336,7 +338,7 @@ export async function saveReadme(_prev: FormState, formData: FormData): Promise<
     return { error: "Only team members can edit the README.", values: pickValues(formData, ["content"]) };
   }
   const content = str(formData, "content");
-  if (content.length > 100_000) {
+  if (content.length > README_MAX_CHARS) {
     return { fieldErrors: { content: "README is too long (100,000 characters max)." }, values: { content } };
   }
   try {

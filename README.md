@@ -36,7 +36,9 @@ every server action and route handler.
 ## Stack
 
 Next.js 16 (App Router, Cache Components, Server Actions), Auth.js v5, Prisma 6 with
-SQLite, Tailwind CSS 4, Resend for email. Uploaded files are stored on local disk under `storage/`.
+PostgreSQL, Tailwind CSS 4, Resend for email. Files are stored in a private
+[Vercel Blob](https://vercel.com/docs/vercel-blob) store in production, or on local
+disk under `storage/` when no Blob token is set. Deployed on Vercel.
 
 ## Getting started
 
@@ -45,9 +47,19 @@ Requires Node.js 22.12+ (22 or 24 LTS). Next.js alone runs on 20.9+, but the tes
 ```bash
 npm install
 cp .env.example .env.local  # then set AUTH_SECRET (npx auth secret) and the Resend settings
-npm run db:migrate          # creates prisma/dev.db
-npm run dev                 # http://localhost:3000
+npm run db:local -- --detach  # local Postgres; paste the postgres:// URL it prints into
+                              # DATABASE_URL and DATABASE_URL_UNPOOLED in .env.local
+npm run db:migrate            # create the tables
+npm run dev                   # http://localhost:3000
 ```
+
+`npm run db:local` uses [`prisma dev`](https://www.prisma.io/docs/postgres/database/local-development),
+a local Postgres that needs no install or account. It's built on an embedded
+engine that handles only one connection well: under many simultaneous requests you
+may see `portal "" does not exist` errors. If that gets in your way, use a real
+Postgres instead, such as Docker (`docker run -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:17`)
+or a free Neon branch, and put its URL in both variables. Without
+`BLOB_READ_WRITE_TOKEN`, uploads are kept on local disk.
 
 All local configuration lives in `.env.local` (git-ignored). Next.js reads it
 automatically; the Prisma CLI does not, so use the `npm run db:*` scripts rather than
@@ -104,6 +116,7 @@ proxy's address and therefore one per-IP bucket.
 | `npm test` | Unit tests (permissions, validation, codes, redirects) |
 | `npm run typecheck` | TypeScript check |
 | `npm run lint` | ESLint |
+| `npm run db:local` | Start a local Postgres (`prisma dev`) |
 | `npm run db:migrate` | Create/apply migrations in development |
 | `npm run db:deploy` | Apply migrations in production |
 | `npm run db:studio` | Browse the database |
@@ -120,21 +133,61 @@ src/lib/email.ts              Resend client and the code email
 src/lib/rate-limit.ts         database-backed rate limits
 src/app/actions/              server actions (auth, teams)
 src/app/verify/               the "enter your code" page
-src/app/api/                  route handlers: auth, file upload, file download
+src/app/api/                  route handlers: auth, file upload (+ Blob upload tokens), file download
+src/lib/storage.ts            file storage: private Vercel Blob, or local disk in development
+src/lib/upload-paths.ts       allowed pathnames for browser-to-Blob uploads
 src/app/t/[slug]/             team page, README editor, settings
 src/lib/                      permissions, validation, storage, data access
 tests/                        unit tests
 ```
 
-## Production notes
+## Deploying to Vercel
 
-- Set `RESEND_API_KEY` and an `EMAIL_FROM` on a verified domain — nobody can sign in
-  without working email.
+GitHub Pages can't host this app (it only serves static files); it needs Vercel or
+another Node host.
+
+1. **Import the repo** at <https://vercel.com/new> (framework: Next.js). `vercel.json`
+   already sets the build command to `prisma migrate deploy && next build`, so every
+   deploy applies pending migrations.
+2. **Database:** in the project's **Storage** tab, add **Neon** (Postgres) and connect
+   it to the project. It sets `DATABASE_URL` (pooled) and `DATABASE_URL_UNPOOLED`
+   (direct, used for migrations). If the variable names differ, rename them to these.
+   Turn on Neon's "preview branches" option so preview deployments migrate their own
+   database branch, not production.
+3. **Files:** in **Storage**, create a **Blob** store with access set to **Private**
+   (it can't be changed later). Connect it to Production, Preview and Development
+   with no custom variable prefix, so that `BLOB_READ_WRITE_TOKEN` is set everywhere.
+   On Vercel the app refuses to run without it rather than falling back to the
+   read-only disk.
+4. **Environment variables** (Settings → Environment Variables):
+   - `AUTH_SECRET`: a new secret from `npx auth secret`; don't reuse your local one.
+   - `RESEND_API_KEY` and `EMAIL_FROM`: a sender on a domain verified in Resend.
+     Nobody can sign in without working email.
+   - Optional: `EMAIL_HOURLY_LIMIT`.
+   - `AUTH_URL` isn't needed on Vercel (Auth.js detects it); set it if you add a
+     custom domain and sign-in redirects go to the wrong host.
+5. **Deploy**, then sign up on the production URL to check that the code email arrives.
+
+How files work on Vercel, where functions are limited to 4.5 MB per request or
+response:
+
+- **Uploads** go straight from the browser to Blob, after the server issues a
+  two-minute token for that one path.
+- **Downloads** go through the access checks first. Files up to 4 MB are streamed
+  as a download under their real name; larger ones redirect to a one-minute
+  presigned download URL.
+- **Namespaces:** every blob path starts with the environment name (`VERCEL_ENV`:
+  production, preview, development), and blobs are only ever deleted inside the
+  current environment. Preview deployments run on a copy of the production
+  database, so they can show production files, but deleting or replacing one there
+  never touches the production blob. `BLOB_NAMESPACE` overrides the name.
+- Vercel sets `X-Forwarded-For` itself, so per-IP limits work without extra setup.
+
+## Production notes (other hosts)
+
+- Set `RESEND_API_KEY` and an `EMAIL_FROM` on a verified domain.
 - Serve the site over HTTPS and set `AUTH_URL` to its URL (or `AUTH_TRUST_HOST=true`
   behind a trusted proxy).
-- To use Postgres, switch the Prisma `provider` to `postgresql`, point `DATABASE_URL`
-  at your database, delete `prisma/migrations/` (the committed migrations are
-  SQLite-specific) and run `npm run db:migrate -- --name init` once to create a
-  Postgres baseline; deploy with `npm run db:deploy` from then on.
-- `storage/` is local disk; on serverless hosts, replace `src/lib/storage.ts` with an
-  object store (e.g. S3) — it is the only module that touches file contents.
+- Point `DATABASE_URL` / `DATABASE_URL_UNPOOLED` at Postgres and run `npm run db:deploy`.
+- Without `BLOB_READ_WRITE_TOKEN`, files go to `STORAGE_DIR` on local disk, which
+  must be a persistent volume.

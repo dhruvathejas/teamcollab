@@ -8,6 +8,8 @@ export const FILE_ACCESS_LABELS: Record<string, string> = {
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
 export const README_NAME = "README.md";
+/** Largest README the in-browser editor will load or save. */
+export const README_MAX_CHARS = 100_000;
 
 /**
  * Normalise an uploaded file name: drop any directory part, control characters

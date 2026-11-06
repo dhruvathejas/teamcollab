@@ -22,13 +22,18 @@ export default function ExplorePage({ searchParams }: PageProps<"/explore">) {
 
 async function Results({ searchParams }: { searchParams: PageProps<"/explore">["searchParams"] }) {
   const raw = (await searchParams).q;
-  const q = (Array.isArray(raw) ? raw[0] : raw)?.trim().slice(0, 100) ?? "";
+  // Postgres can't compare against U+0000, so drop it from the query.
+  const q = (Array.isArray(raw) ? raw[0] : raw)?.replace(/\u0000/g, "").trim().slice(0, 100) ?? "";
 
   const teams = await prisma.team.findMany({
     where: {
       visibility: "PUBLIC",
       ...(q && {
-        OR: [{ name: { contains: q } }, { description: { contains: q } }, { slug: { contains: q } }],
+        OR: [
+          { name: { contains: q, mode: "insensitive" } },
+          { description: { contains: q, mode: "insensitive" } },
+          { slug: { contains: q, mode: "insensitive" } },
+        ],
       }),
     },
     orderBy: { createdAt: "desc" },
