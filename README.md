@@ -36,9 +36,10 @@ every server action and route handler.
 ## Stack
 
 Next.js 16 (App Router, Cache Components, Server Actions), Auth.js v5, Prisma 6 with
-PostgreSQL, Tailwind CSS 4, Resend for email. Files are stored in a private
-[Vercel Blob](https://vercel.com/docs/vercel-blob) store in production, or on local
-disk under `storage/` when no Blob token is set. Deployed on Vercel.
+PostgreSQL, Tailwind CSS 4, Resend for email. Uploaded files are stored on disk
+(`STORAGE_DIR`, a persistent volume in production), or in a private
+[Vercel Blob](https://vercel.com/docs/vercel-blob) store when deployed on Vercel.
+Deployed with Docker on Railway, or on Vercel.
 
 ## Getting started
 
@@ -101,8 +102,9 @@ the database ([`src/lib/rate-limit.ts`](src/lib/rate-limit.ts)):
 | Code emails for the whole app | `EMAIL_HOURLY_LIMIT` per hour (default 300): 70% reserved for logins, 30% for sign-ups |
 | Login submissions and valid sign-up submissions per client IP | 30 per 15 min |
 
-Per-IP limits use the right-most `X-Forwarded-For` entry, so the proxy closest to the
-app must append the client address (nginx:
+Per-IP limits use the right-most `X-Forwarded-For` entry (or the header named in
+`CLIENT_IP_HEADER`, e.g. `x-real-ip` on Railway), so the proxy closest to the app
+must append the client address (nginx:
 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`; Vercel does this
 automatically). Without that, clients can spoof the value, or every client shares the
 proxy's address and therefore one per-IP bucket.
@@ -141,10 +143,39 @@ src/lib/                      permissions, validation, storage, data access
 tests/                        unit tests
 ```
 
-## Deploying to Vercel
+## Deploying to Railway (recommended)
 
-GitHub Pages can't host this app (it only serves static files); it needs Vercel or
-another Node host.
+GitHub Pages can't host this app: it only serves static files. Railway runs the
+included `Dockerfile` as a normal server, with Railway Postgres for the database and
+a volume for uploaded files.
+
+1. **New project** at <https://railway.com/new> → **Deploy from GitHub repo** → pick
+   `teamcollab`. Railway finds the `Dockerfile` and builds with it.
+2. **Database:** in the project, **+ New → Database → PostgreSQL**.
+3. **Volume:** right-click the app service → **Attach volume**, with mount path
+   **`/data`**. Uploaded files go to `/data/storage`, which survives redeploys.
+   A service with a volume runs as a single instance, with a few seconds of
+   downtime on each redeploy.
+4. **Variables** (app service → Variables):
+   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (use **Add Reference** if your
+     database service has another name).
+   - `AUTH_SECRET`: a new secret from `npx auth secret`.
+   - `AUTH_TRUST_HOST` = `true`.
+   - `RESEND_API_KEY` and `EMAIL_FROM`: a sender on a domain verified in Resend.
+     Nobody can sign in without working email.
+   - `CLIENT_IP_HEADER` = `x-real-ip`: Railway's proxy passes the visitor's address
+     in `X-Real-IP`; per-IP rate limits need it.
+5. **Domain:** app service → Settings → Networking → **Generate Domain**. If asked
+   for a port, use `3000`. Then set `AUTH_URL` to that `https://…up.railway.app`
+   address. A custom domain can be added in the same place.
+6. **Deploy.** Each start applies pending database migrations before serving, so
+   there is no separate migration step. Sign up on the live URL to check that the
+   code email arrives and an upload works.
+
+The same image runs anywhere Docker does (Fly.io, a VPS): set the same variables
+and mount a persistent volume at `/data`.
+
+## Deploying to Vercel (alternative)
 
 1. **Import the repo** at <https://vercel.com/new> (framework: Next.js). `vercel.json`
    already sets the build command to `prisma migrate deploy && next build`, so every

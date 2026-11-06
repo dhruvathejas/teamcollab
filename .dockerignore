@@ -1,0 +1,10 @@
+.git
+.next
+node_modules
+.env*
+!.env.example
+storage
+prisma/*.db*
+coverage
+tsconfig.tsbuildinfo
+.vscode
