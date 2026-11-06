@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import ReactMarkdown from "react-markdown";
 import {
+  adminJoinTeam,
   cancelJoinRequest,
   deleteFile,
   leaveTeam,
@@ -69,8 +70,17 @@ async function Team({ params }: { params: PageProps<"/t/[slug]">["params"] }) {
 }
 
 function Actions({ view, signedIn }: { view: TeamView; signedIn: boolean }) {
-  const { team, role, pendingInvite, pendingRequest } = view;
+  const { team, role, memberRole, viaSiteAdmin, pendingInvite, pendingRequest } = view;
 
+  if (viaSiteAdmin && !memberRole) {
+    return (
+      <form action={adminJoinTeam} className="flex items-center gap-2">
+        <Badge tone="accent">Site admin</Badge>
+        <input type="hidden" name="teamId" value={team.id} />
+        <SubmitButton pendingText="Joining…">Join as admin</SubmitButton>
+      </form>
+    );
+  }
   if (pendingInvite) {
     return (
       <form action={respondToInvite} className="flex items-center gap-2">
@@ -97,7 +107,8 @@ function Actions({ view, signedIn }: { view: TeamView; signedIn: boolean }) {
       <ButtonLink href={`/login?next=${encodeURIComponent(`/t/${team.slug}`)}`}>Log in to join</ButtonLink>
     );
   }
-  if (canLeave(role)) {
+  // Leaving depends on real membership (a site admin acts as owner everywhere).
+  if (canLeave(memberRole)) {
     return (
       <form action={leaveTeam}>
         <input type="hidden" name="teamId" value={team.id} />

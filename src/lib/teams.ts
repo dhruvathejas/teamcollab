@@ -1,15 +1,37 @@
 import "server-only";
 import { cache } from "react";
 import { prisma } from "@/lib/db";
+import { isSiteAdmin } from "@/lib/moderation";
 import { canViewTeam, isRole, type Role } from "@/lib/permissions";
 
-export async function getRole(teamId: string, userId: string | undefined): Promise<Role | null> {
+/** The user's actual membership role in the team, ignoring site-admin powers. */
+export async function getMembershipRole(teamId: string, userId: string | undefined): Promise<Role | null> {
   if (!userId) return null;
   const m = await prisma.membership.findUnique({
     where: { teamId_userId: { teamId, userId } },
     select: { role: true },
   });
   return m && isRole(m.role) ? m.role : null;
+}
+
+/**
+ * The role used for permission checks: the membership role, except that site
+ * admins act as the owner of every team (see src/lib/moderation.ts).
+ */
+export async function getRole(teamId: string, userId: string | undefined): Promise<Role | null> {
+  if (!userId) return null;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      email: true,
+      emailVerified: true,
+      memberships: { where: { teamId }, select: { role: true } },
+    },
+  });
+  if (!user) return null;
+  if (isSiteAdmin(user)) return "OWNER";
+  const role = user.memberships[0]?.role;
+  return role && isRole(role) ? role : null;
 }
 
 /**
@@ -26,9 +48,10 @@ export const getTeamForViewer = cache(async (slug: string, userId: string | unde
   });
   if (!team) return null;
 
-  const [role, pendingInvite, pendingRequest] = userId
+  const [role, memberRole, pendingInvite, pendingRequest] = userId
     ? await Promise.all([
         getRole(team.id, userId),
+        getMembershipRole(team.id, userId),
         prisma.invite.findFirst({
           where: { teamId: team.id, inviteeId: userId, status: "PENDING" },
           select: { id: true },
@@ -38,10 +61,20 @@ export const getTeamForViewer = cache(async (slug: string, userId: string | unde
           select: { id: true },
         }),
       ])
-    : [null, null, null];
+    : [null, null, null, null];
 
   if (!canViewTeam(team.visibility, role, Boolean(pendingInvite))) return null;
-  return { team, role, pendingInvite, pendingRequest };
+  return {
+    team,
+    /** Effective role for permission checks (site admins: OWNER). */
+    role,
+    /** Actual membership role, or null if not a member. */
+    memberRole,
+    /** Viewer has owner powers here only because they are a site admin. */
+    viaSiteAdmin: role === "OWNER" && memberRole !== "OWNER",
+    pendingInvite,
+    pendingRequest,
+  };
 });
 
 export type TeamView = NonNullable<Awaited<ReturnType<typeof getTeamForViewer>>>;

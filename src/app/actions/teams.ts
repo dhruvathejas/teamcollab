@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { refresh } from "next/cache";
+import { refresh, revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { README_MAX_CHARS, README_NAME } from "@/lib/files";
@@ -23,7 +23,7 @@ import {
 import { requireUser } from "@/lib/session";
 import { deleteBlob, deleteTeamBlobs } from "@/lib/storage";
 import { FileLockedError, defaultReadme, writeTeamFile } from "@/lib/team-files";
-import { getRole } from "@/lib/teams";
+import { getMembershipRole, getRole } from "@/lib/teams";
 import {
   createTeamSchema,
   descriptionSchema,
@@ -149,6 +149,7 @@ export async function deleteTeam(_prev: FormState, formData: FormData): Promise<
   await prisma.team.delete({ where: { id: team.id } });
   // The team is gone; removing its files is best effort (a failure leaves orphans, not an error page).
   await deleteTeamBlobs(team.id).catch((err) => console.error("deleteTeam: blob cleanup failed", err));
+  revalidatePath("/", "layout"); // the team must not reappear from the router cache
   redirect("/");
 }
 
@@ -213,7 +214,7 @@ export async function inviteMember(_prev: FormState, formData: FormData): Promis
 
   const invitee = await prisma.user.findUnique({ where: { username: username.data } });
   if (!invitee) return { fieldErrors: { username: `No user named @${username.data}.` }, values };
-  if (await getRole(team.id, invitee.id)) {
+  if (await getMembershipRole(team.id, invitee.id)) {
     return { fieldErrors: { username: `@${invitee.username} is already a member.` }, values };
   }
   const pending = await prisma.invite.findFirst({
@@ -261,10 +262,10 @@ export async function respondToInvite(formData: FormData) {
 }
 
 /** Add a member and close any other pending invites/requests for them. */
-async function addMember(tx: Prisma.TransactionClient, teamId: string, userId: string) {
+async function addMember(tx: Prisma.TransactionClient, teamId: string, userId: string, role: Role = "MEMBER") {
   await tx.membership.upsert({
     where: { teamId_userId: { teamId, userId } },
-    create: { teamId, userId, role: "MEMBER" },
+    create: { teamId, userId, role },
     update: {},
   });
   const now = new Date();
@@ -300,10 +301,22 @@ export async function removeMember(formData: FormData) {
 }
 
 export async function leaveTeam(formData: FormData) {
-  const { user, team, role } = await teamAndRole(str(formData, "teamId"));
-  if (!canLeave(role)) throw new Error("The owner can't leave; delete the team instead.");
+  const { user, team } = await teamAndRole(str(formData, "teamId"));
+  // Based on the real membership, so a site admin who joined can leave again.
+  if (!canLeave(await getMembershipRole(team.id, user.id))) {
+    throw new Error("The owner can't leave; delete the team instead.");
+  }
   await prisma.membership.delete({ where: { teamId_userId: { teamId: team.id, userId: user.id } } });
+  revalidatePath("/", "layout");
   redirect(team.visibility === "PUBLIC" ? `/t/${team.slug}` : "/");
+}
+
+/** Site admins can join any team directly, public or private, as an admin. */
+export async function adminJoinTeam(formData: FormData) {
+  const { user, team } = await teamAndRole(str(formData, "teamId"));
+  if (!user.siteAdmin) throw new Error("Not allowed.");
+  await prisma.$transaction((tx) => addMember(tx, team.id, user.id, "ADMIN"));
+  refresh();
 }
 
 // ---------- Files ----------

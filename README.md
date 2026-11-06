@@ -30,6 +30,23 @@ A way for teams with ambitions to collaborate.
 | Promote/demote admins, change name/license/visibility, delete team | ✓ | – | – | – |
 | Request to join | – | – | – | public teams |
 
+### Site admin
+
+The account whose verified email is listed in `SITE_ADMIN_EMAILS` (default:
+`dhruvathejasb@gmail.com`) is a site admin. A site admin:
+
+- acts as the **owner of every team**, private ones included: open any team, change
+  its settings, remove members, delete it, and **join** it directly ("Join as admin");
+- gets an **Admin** link in the header, opening `/admin` to search every account and, for
+  any non-admin account, **suspend** it until a date, **ban** it, **sign it out
+  everywhere**, **remove it from a team**, or **delete** it (teams it owns are deleted
+  with it).
+
+Banned and suspended accounts are signed out immediately and can't log in (they see
+the reason after entering the correct password). Their teams and files stay visible.
+Site admins themselves can't be moderated. Admin rights only apply once that address
+has been verified by sign-up, so nobody else can claim them by typing it in.
+
 The rules live in [`src/lib/permissions.ts`](src/lib/permissions.ts) and are enforced in
 every server action and route handler.
 
@@ -109,6 +126,22 @@ must append the client address (nginx:
 automatically). Without that, clients can spoof the value, or every client shares the
 proxy's address and therefore one per-IP bucket.
 
+## Maintenance and update screens
+
+- **Automatic:** if a page fails to load, which is usually because the app is
+  restarting or a browser still has the previous version, visitors see "TeamCollab
+  is under updates" instead of a blank or unresponsive page. It retries by itself and
+  reloads the page when needed.
+- **Maintenance mode:** set `MAINTENANCE_MODE=true` (on Railway: Variables → it
+  redeploys). Every page then shows "TeamCollab is under updates" (HTTP 503, and the
+  page refreshes itself every 30 s); the API answers 503 too. Remove the variable
+  to reopen. To use the site yourself during maintenance, set
+  `MAINTENANCE_BYPASS_TOKEN` (16+ characters) and open `/?bypass=<token>` once.
+
+Railway briefly stops the app on each redeploy (it has a volume), and during those
+seconds Railway's own error page is shown, which the app can't control. For longer
+updates, turn maintenance mode on first.
+
 ## Scripts
 
 | Command | What it does |
@@ -165,6 +198,8 @@ a volume for uploaded files.
      Nobody can sign in without working email.
    - `CLIENT_IP_HEADER` = `x-real-ip`: Railway's proxy passes the visitor's address
      in `X-Real-IP`; per-IP rate limits need it.
+   - Optional: `SITE_ADMIN_EMAILS` (defaults to `dhruvathejasb@gmail.com`),
+     `MAINTENANCE_MODE`, `MAINTENANCE_BYPASS_TOKEN`.
 5. **Domain:** app service → Settings → Networking → **Generate Domain**. If asked
    for a port, use `3000`. Then set `AUTH_URL` to that `https://…up.railway.app`
    address. A custom domain can be added in the same place.
