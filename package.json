@@ -13,7 +13,8 @@
     "postinstall": "prisma generate",
     "db:deploy": "dotenv --no-expand -e .env.local -- prisma migrate deploy",
     "db:studio": "dotenv --no-expand -e .env.local -- prisma studio",
-    "db:local": "prisma dev --name teamcollab"
+    "db:local": "prisma dev --name teamcollab",
+    "predev": "dotenv --no-expand -e .env.local -- prisma migrate deploy"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

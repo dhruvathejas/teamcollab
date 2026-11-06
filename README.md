@@ -68,7 +68,7 @@ cp .env.example .env.local  # then set AUTH_SECRET (npx auth secret) and the Res
 npm run db:local -- --detach  # local Postgres; paste the postgres:// URL it prints into
                               # DATABASE_URL and DATABASE_URL_UNPOOLED in .env.local
 npm run db:migrate            # create the tables
-npm run dev                   # http://localhost:3000
+npm run dev                   # http://localhost:3000 (applies pending migrations first)
 ```
 
 `npm run db:local` uses [`prisma dev`](https://www.prisma.io/docs/postgres/database/local-development),
