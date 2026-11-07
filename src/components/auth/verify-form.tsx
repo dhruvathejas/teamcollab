@@ -6,7 +6,7 @@ import type { FormState } from "@/app/actions/types";
 import { SubmitButton } from "../submit-button";
 import { Field, Notice, buttonStyles, inputStyles } from "../ui";
 
-export function VerifyForm({ next, kind, canResend }: { next: string; kind: "LOGIN" | "SIGNUP"; canResend: boolean }) {
+export function VerifyForm({ next, kind, canResend }: { next: string; kind: "LOGIN" | "SIGNUP" | "RESET"; canResend: boolean }) {
   const [state, action] = useActionState<FormState, FormData>(verifyCode, {});
   const [resendState, resendAction] = useActionState<FormState, FormData>(resendCode, {});
   const mustRestart = Boolean(state.fieldErrors?.restart || resendState.fieldErrors?.restart);

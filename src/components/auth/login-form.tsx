@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState } from "react";
 import { login } from "@/app/actions/auth";
 import type { FormState } from "@/app/actions/types";
@@ -19,6 +20,9 @@ export function LoginForm({ next }: { next: string }) {
         <input id="password" name="password" type="password" autoComplete="current-password" required className={inputStyles} />
       </Field>
       <SubmitButton pendingText="Checking…" className="w-full">Log in</SubmitButton>
+      <p className="text-center text-sm">
+        <Link href="/forgot" className="text-accent underline">Forgot your password?</Link>
+      </p>
     </form>
   );
 }

@@ -46,27 +46,34 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-export function codeEmail(opts: { to: string; code: string; purpose: "login" | "signup"; username: string }): Email {
-  const action = opts.purpose === "signup" ? "finish creating your account" : "log in";
+export function codeEmail(opts: {
+  to: string;
+  code: string;
+  purpose: "login" | "signup" | "reset";
+  /** Omitted for password resets, which can cover several accounts. */
+  username?: string;
+}): Email {
+  const action =
+    opts.purpose === "signup"
+      ? "finish creating your account"
+      : opts.purpose === "reset"
+        ? "reset your password (you'll then choose which account)"
+        : "log in";
+  const greeting = opts.username ? `Hi @${opts.username},` : "Hi,";
+  const footer =
+    opts.purpose === "reset"
+      ? "It expires in 10 minutes. If you didn't ask to reset your password, you can ignore this email; nothing has changed."
+      : "It expires in 10 minutes. If you didn't try to sign in, you can ignore this email, but someone may know your password, so consider changing it.";
   const subject = `${opts.code} is your teamcollab code`;
-  const text = [
-    `Hi @${opts.username},`,
-    "",
-    `Use this code to ${action} on teamcollab:`,
-    "",
-    `    ${opts.code}`,
-    "",
-    "It expires in 10 minutes. If you didn't try to sign in, you can ignore this",
-    "email — but someone may know your password, so consider changing it.",
-  ].join("\n");
+  const text = [greeting, "", `Use this code to ${action} on teamcollab:`, "", `    ${opts.code}`, "", footer].join("\n");
   const html = `<!doctype html>
 <html><body style="margin:0;padding:24px;background:#f7f7f8;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#18181b">
   <div style="max-width:420px;margin:0 auto;background:#fff;border:1px solid #e2e2e8;border-radius:12px;padding:28px">
     <p style="margin:0 0 16px;font-weight:600">teamcollab</p>
-    <p style="margin:0 0 8px">Hi @${escapeHtml(opts.username)},</p>
-    <p style="margin:0 0 20px">Use this code to ${action}:</p>
+    <p style="margin:0 0 8px">${escapeHtml(greeting)}</p>
+    <p style="margin:0 0 20px">Use this code to ${escapeHtml(action)}:</p>
     <p style="margin:0 0 20px;font-size:32px;font-weight:700;letter-spacing:8px;font-family:ui-monospace,Menlo,monospace">${opts.code}</p>
-    <p style="margin:0;color:#62626d;font-size:13px">It expires in 10 minutes. If you didn't try to sign in, you can ignore this email, but someone may know your password, so consider changing it.</p>
+    <p style="margin:0;color:#62626d;font-size:13px">${escapeHtml(footer)}</p>
   </div>
 </body></html>`;
   return { to: opts.to, subject, text, html };
