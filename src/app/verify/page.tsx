@@ -5,7 +5,7 @@ import { Suspense } from "react";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { VerifyForm } from "@/components/auth/verify-form";
 import { PageSkeleton } from "@/components/ui";
-import { getChallengeInfo } from "@/lib/challenges";
+import { getChallengeInfo, getVerifiedReset } from "@/lib/challenges";
 import { getCurrentUser, safeNext } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Check your email" };
@@ -22,14 +22,17 @@ async function Verify({ searchParams }: { searchParams: PageProps<"/verify">["se
   const next = safeNext((await searchParams).next);
   if (await getCurrentUser()) redirect(next);
 
+  // A reset whose code was already entered continues with choosing the account.
+  if (await getVerifiedReset()) redirect("/forgot/choose");
   const challenge = await getChallengeInfo();
   if (!challenge) {
     return (
-      <AuthShell title="Code expired" subtitle="This sign-in attempt is no longer valid.">
+      <AuthShell title="Code expired" subtitle="This attempt is no longer valid.">
         <p className="text-sm text-muted">
           Codes expire after 10 minutes or too many wrong tries.{" "}
           <Link href={`/login?next=${encodeURIComponent(next)}`} className="text-accent underline">Log in again</Link>{" "}
-          or <Link href={`/signup?next=${encodeURIComponent(next)}`} className="text-accent underline">sign up</Link>.
+          or <Link href={`/signup?next=${encodeURIComponent(next)}`} className="text-accent underline">sign up</Link>. Resetting a
+          forgotten password? <Link href="/forgot" className="text-accent underline">Start the reset again</Link>.
         </p>
       </AuthShell>
     );
@@ -41,7 +44,11 @@ async function Verify({ searchParams }: { searchParams: PageProps<"/verify">["se
       subtitle={
         <>
           We sent a 6-digit code to <span className="font-medium text-fg">{challenge.maskedEmail}</span>
-          {challenge.kind === "SIGNUP" ? " to confirm your address." : "."}
+          {challenge.kind === "SIGNUP"
+            ? " to confirm your address."
+            : challenge.kind === "RESET"
+              ? " if any account uses it. Enter it to choose an account and set a new password."
+              : "."}
         </>
       }
     >

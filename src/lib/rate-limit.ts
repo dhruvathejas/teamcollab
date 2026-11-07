@@ -76,45 +76,65 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 /** All limits used by the sign-in flow, in one place. */
+type Kind = "LOGIN" | "SIGNUP" | "RESET";
+
 export const limits = {
-  /** Login/sign-up form submissions per IP (checked before any password hashing). */
+  /** Login/sign-up/reset form submissions per IP (checked before any password hashing). */
   authAttemptsPerIp: (ip: string): Limit => ({ key: `auth:ip:${ip}`, max: 30, windowMs: 15 * MINUTE }),
-  /** Code emails (first sends and resends) to one mailbox. */
-  emailsPerMailbox: (email: string): Limit => ({ key: `send:to:${mailboxKey(email)}`, max: 5, windowMs: 15 * MINUTE }),
+  /**
+   * Code emails (first sends and resends) to one mailbox. Resets count
+   * separately, so resets someone else starts can't use up the owner's login
+   * codes.
+   */
+  emailsPerMailbox: (kind: Kind, email: string): Limit => ({
+    key: `send:${kind === "RESET" ? "reset" : "to"}:${mailboxKey(email)}`,
+    max: 5,
+    windowMs: 15 * MINUTE,
+  }),
   /** Code emails triggered from one IP. */
   emailsPerIp: (ip: string): Limit => ({ key: `send:ip:${ip}`, max: 20, windowMs: HOUR }),
   /**
-   * Code emails across the whole app, to protect the Resend quota. Sign-ups
-   * (which need no credentials) get their own share, so a flood of fake
-   * sign-ups can't use up the budget that existing users need to log in.
+   * Code emails across the whole app, to protect the Resend quota. Logins get
+   * the largest share to themselves; sign-ups and resets, which need no
+   * credentials, each have their own, so floods of either can't stop existing
+   * users from logging in.
    */
-  emailsGlobal: (kind: "LOGIN" | "SIGNUP"): Limit => {
+  emailsGlobal: (kind: Kind): Limit => {
     const total = Number(process.env.EMAIL_HOURLY_LIMIT) || 300;
-    return kind === "LOGIN"
-      ? { key: "send:global:login", max: Math.ceil(total * 0.7), windowMs: HOUR }
-      : { key: "send:global:signup", max: Math.floor(total * 0.3), windowMs: HOUR };
+    if (kind === "LOGIN") return { key: "send:global:login", max: Math.ceil(total * 0.7), windowMs: HOUR };
+    return { key: `send:global:${kind.toLowerCase()}`, max: Math.floor(total * 0.3), windowMs: HOUR };
   },
-  /**
-   * Wrong codes across all of one account's login attempts. Once used up, no
-   * new login codes are sent until the window ends, which caps a
-   * password-holding attacker at a handful of guesses per day. Sign-ups have
-   * their own budget so nobody can lock an address's owner out by fumbling
-   * codes on a sign-up they started with that address.
-   */
-  failedCodes: (kind: "LOGIN" | "SIGNUP", email: string): Limit => ({
-    key: `fail:${kind === "LOGIN" ? "login" : "signup"}:${mailboxKey(email)}`,
-    max: 10,
-    windowMs: 24 * HOUR,
-  }),
 };
+
+const DAY = 24 * HOUR;
+
+/**
+ * Wrong-code budgets that outlive a single sign-in attempt. Once one is used
+ * up, no new codes of that kind are sent until it resets.
+ * - LOGIN: per account (only someone with that account's password can spend
+ *   it, and it can't block other accounts on the same email).
+ * - SIGNUP: per mailbox, separate from logins.
+ * - RESET: per IP and mailbox, plus a looser per-mailbox ceiling on guessing,
+ *   so a stranger can't lock the owner out of resetting with a few wrong codes.
+ */
+export function failureLimits(kind: Kind, who: { email: string; userId?: string | null; ip: string }): Limit[] {
+  if (kind === "LOGIN" && who.userId) return [{ key: `fail:login:user:${who.userId}`, max: 10, windowMs: DAY }];
+  if (kind === "RESET") {
+    return [
+      { key: `fail:reset:ip:${who.ip}:${mailboxKey(who.email)}`, max: 10, windowMs: DAY },
+      { key: `fail:reset:${mailboxKey(who.email)}`, max: 50, windowMs: DAY },
+    ];
+  }
+  return [{ key: `fail:${kind.toLowerCase()}:${mailboxKey(who.email)}`, max: 10, windowMs: DAY }];
+}
 
 /** Consume the email-sending budget for one code email to `email`. */
 export async function consumeEmailBudget(
-  kind: "LOGIN" | "SIGNUP",
+  kind: Kind,
   email: string,
 ): Promise<{ ok: boolean; refund: () => Promise<void> }> {
   const ip = await clientIp();
-  const used = [limits.emailsPerMailbox(email), limits.emailsPerIp(ip), limits.emailsGlobal(kind)];
+  const used = [limits.emailsPerMailbox(kind, email), limits.emailsPerIp(ip), limits.emailsGlobal(kind)];
   const ok = await consume(...used);
   return { ok, refund: async () => void (await Promise.all(used.map((l) => refund(l)))) };
 }

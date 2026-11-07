@@ -4,6 +4,9 @@ A way for teams with ambitions to collaborate.
 
 - **Accounts**: sign up with a username, email and password. Sign-up and every login
   are confirmed with a 6-digit code emailed to you (via [Resend](https://resend.com)).
+  One email can own up to 10 accounts. **Forgot your password?** Enter your email, type
+  the emailed code, pick which of that email's accounts to reset, and set a new
+  password; you're signed in and that account is signed out everywhere else.
 - **Teams**: create a team and become its owner. Choose the license that applies to
   every file in the team project, whether the team is public or private, and whether
   to start with a README.
@@ -35,7 +38,8 @@ A way for teams with ambitions to collaborate.
 There are two kinds of admin:
 
 - **Root admins** are the verified accounts whose email is in `SITE_ADMIN_EMAILS`
-  (default `dhruvathejasb@gmail.com`). They have every power, manage every other
+  (default `dhruvathejasb@gmail.com`). Every account on such an address is a root
+  admin. They have every power, manage every other
   admin, and can't be suspended, banned, signed out, deleted or removed from the app.
 - **Added admins** are made admin by another admin, who chooses four options:
   **can add other admins**, **can be suspended** (which also lets other admins sign
@@ -126,6 +130,14 @@ silent fallback.
 2. The code is entered on `/verify`. Only then does Auth.js issue a session, and for
    sign-ups the account is created with a verified email.
 
+**Forgot password** (`/forgot`): enter an email and a code is sent if any account uses
+it. The page looks the same, and takes the same time, either way, because the email
+is sent after the response. So nobody can use it to find out who has an account.
+After the code, `/forgot/choose` lists that email's accounts. Pick one and set a new
+password, and you're signed in. Each reset changes one account, once, within 15
+minutes of entering the code. Banned and suspended accounts are listed but can't be
+picked.
+
 Codes expire after 10 minutes. A code can be resent every 30 seconds; each resend
 gives a fresh 10 minutes, up to 30 minutes per sign-in attempt. Limits, all stored in
 the database ([`src/lib/rate-limit.ts`](src/lib/rate-limit.ts)):
@@ -134,12 +146,13 @@ the database ([`src/lib/rate-limit.ts`](src/lib/rate-limit.ts)):
 | --- | --- |
 | Wrong codes per sign-in attempt | 5, then start over |
 | Codes per sign-in attempt | 5 (the first + 4 resends), then start over |
-| Wrong login codes per account (across attempts) | 10 per 24 h, then no new login codes until the window ends |
+| Wrong login codes per account (across attempts) | 10 per 24 h, then no new login codes for that account until the window ends |
 | Wrong sign-up codes per address | 10 per 24 h (kept separate, so it can't block the owner's logins) |
-| Code emails per mailbox | 5 per 15 min (first sends and resends; `a+tag@` and Gmail dot variants count as one mailbox) |
+| Wrong password-reset codes | 10 per 24 h per network and address, and 50 per 24 h per address overall |
+| Code emails per mailbox | 5 per 15 min for login/sign-up codes, and separately 5 per 15 min for reset codes (`a+tag@` and Gmail dot variants count as one mailbox) |
 | Code emails per client IP | 20 per hour |
-| Code emails for the whole app | `EMAIL_HOURLY_LIMIT` per hour (default 300): 70% reserved for logins, 30% for sign-ups |
-| Login submissions and valid sign-up submissions per client IP | 30 per 15 min |
+| Code emails for the whole app | `EMAIL_HOURLY_LIMIT` per hour (default 300): 70% reserved for logins; sign-ups and resets each get their own 30% |
+| Login, valid sign-up and reset submissions per client IP | 30 per 15 min |
 
 Per-IP limits use the right-most `X-Forwarded-For` entry (or the header named in
 `CLIENT_IP_HEADER`, e.g. `x-real-ip` on Railway), so the proxy closest to the app

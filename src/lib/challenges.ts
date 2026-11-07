@@ -1,9 +1,10 @@
 import "server-only";
 import { cookies, headers } from "next/headers";
+import { after } from "next/server";
 import { prisma } from "@/lib/db";
-import { accountStatus } from "@/lib/moderation";
+import { accountStatus, blockedMessage } from "@/lib/moderation";
 import { codeEmail, sendEmail } from "@/lib/email";
-import { consume, consumeEmailBudget, isExhausted, limits, pruneRateLimits, refund } from "@/lib/rate-limit";
+import { clientIp, consume, consumeEmailBudget, failureLimits, isExhausted, pruneRateLimits, refund } from "@/lib/rate-limit";
 import {
   CHALLENGE_TTL_MS,
   MAX_ATTEMPTS,
@@ -26,7 +27,17 @@ import {
 
 const COOKIE = "tc_2fa";
 
-export type ChallengeKind = "LOGIN" | "SIGNUP";
+export type ChallengeKind = "LOGIN" | "SIGNUP" | "RESET";
+
+/** Accounts one email address may own. */
+export const MAX_ACCOUNTS_PER_EMAIL = 10;
+
+/** After the code is entered, how long the account can be picked and a password set. */
+export const RESET_WINDOW_MS = 15 * 60 * 1000;
+
+function purposeOf(kind: string): "login" | "signup" | "reset" {
+  return kind === "SIGNUP" ? "signup" : kind === "RESET" ? "reset" : "login";
+}
 export type SignupPayload = { username: string; name: string | null; passwordHash: string };
 
 /**
@@ -61,9 +72,16 @@ export async function clearChallengeCookie(): Promise<void> {
 export async function startChallenge(opts: {
   kind: ChallengeKind;
   email: string;
-  username: string;
+  /** Shown in the email greeting; omitted for password resets. */
+  username?: string;
   userId?: string;
   payload?: SignupPayload;
+  /**
+   * False: create the challenge and cookie but send nothing (a reset for an
+   * address no account uses), so the next step looks the same either way and
+   * doesn't reveal which addresses have accounts.
+   */
+  deliver?: boolean;
 }): Promise<void> {
   const now = Date.now();
 
@@ -74,7 +92,10 @@ export async function startChallenge(opts: {
   // An account that has had too many wrong codes gets no new codes for a while,
   // however many challenges are started, so a password alone can't be used to
   // grind through codes.
-  if (await isExhausted(limits.failedCodes(opts.kind, opts.email))) throw new RateLimitError("failures");
+  const ip = await clientIp();
+  for (const limit of failureLimits(opts.kind, { email: opts.email, userId: opts.userId, ip })) {
+    if (await isExhausted(limit)) throw new RateLimitError("failures");
+  }
   const budget = await consumeEmailBudget(opts.kind, opts.email);
   if (!budget.ok) throw new RateLimitError("emails");
 
@@ -93,14 +114,29 @@ export async function startChallenge(opts: {
     },
   });
 
-  try {
-    await sendEmail(
-      codeEmail({ to: opts.email, code, username: opts.username, purpose: opts.kind === "SIGNUP" ? "signup" : "login" }),
-    );
-  } catch (err) {
-    await prisma.emailChallenge.delete({ where: { id: challenge.id } });
-    await budget.refund();
-    throw err;
+  const email = codeEmail({ to: opts.email, code, username: opts.username, purpose: purposeOf(opts.kind) });
+  if (opts.kind === "RESET") {
+    // Send after the response, whether or not there's anything to send, so the
+    // reply takes the same time (and never shows a send error) for addresses
+    // with and without accounts. A failed send can be retried with "Resend".
+    const deliver = opts.deliver !== false;
+    after(async () => {
+      if (!deliver) return;
+      try {
+        await sendEmail(email);
+      } catch (err) {
+        console.error("reset: failed to send code", err);
+        await budget.refund();
+      }
+    });
+  } else {
+    try {
+      await sendEmail(email);
+    } catch (err) {
+      await prisma.emailChallenge.delete({ where: { id: challenge.id } });
+      await budget.refund();
+      throw err;
+    }
   }
 
   (await cookies()).set(COOKIE, token, {
@@ -168,14 +204,14 @@ export async function verifyChallengeCode(code: string): Promise<VerifyResult> {
   // Charge the account-wide budget *before* comparing, so parallel guesses
   // can't all be compared while the budget still looks unspent. A correct
   // code gets its unit back below.
-  const accountFailures = limits.failedCodes(c.kind as ChallengeKind, c.email);
-  if (!(await consume(accountFailures))) return lock(c.id);
+  const failures = failureLimits(c.kind as ChallengeKind, { email: c.email, userId: c.userId, ip: await clientIp() });
+  if (!(await consume(...failures))) return lock(c.id);
 
   if (!codeMatches(code, c.tokenHash, secret(), c.codeHash)) {
     const left = MAX_ATTEMPTS - (c.attempts + 1);
     return left > 0 ? { ok: false, reason: "invalid", attemptsLeft: left } : { ok: false, reason: "locked" };
   }
-  await refund(accountFailures);
+  await Promise.all(failures.map((l) => refund(l)));
 
   await prisma.emailChallenge.update({ where: { id: c.id }, data: { verifiedAt: new Date() } });
   return {
@@ -203,10 +239,14 @@ export async function resendChallengeCode(): Promise<ResendResult> {
   const wait = c.lastSentAt.getTime() + RESEND_COOLDOWN_MS - Date.now();
   if (wait > 0) return { ok: false, reason: "cooldown", waitSeconds: Math.ceil(wait / 1000) };
 
+  // Resets for addresses no account uses never send anything, resends included.
+  const deliver = c.kind !== "RESET" || (await prisma.user.count({ where: { email: c.email } })) > 0;
   const username =
     c.kind === "SIGNUP"
       ? (JSON.parse(c.payload ?? "{}") as SignupPayload).username
-      : (await prisma.user.findUnique({ where: { id: c.userId ?? "" }, select: { username: true } }))?.username ?? "";
+      : c.kind === "LOGIN"
+        ? ((await prisma.user.findUnique({ where: { id: c.userId ?? "" }, select: { username: true } }))?.username ?? "")
+        : undefined;
 
   const budget = await consumeEmailBudget(c.kind as ChallengeKind, c.email);
   if (!budget.ok) return { ok: false, reason: "rate" };
@@ -229,8 +269,22 @@ export async function resendChallengeCode(): Promise<ResendResult> {
     return { ok: false, reason: "cooldown", waitSeconds: Math.ceil(RESEND_COOLDOWN_MS / 1000) };
   }
 
+  if (c.kind === "RESET") {
+    // Same as the first send: after the response, and silently, so resends
+    // don't reveal whether the address has accounts.
+    after(async () => {
+      if (!deliver) return;
+      try {
+        await sendEmail(codeEmail({ to: c.email, code, purpose: "reset" }));
+      } catch (err) {
+        console.error("reset: failed to resend code", err);
+        await budget.refund();
+      }
+    });
+    return { ok: true };
+  }
   try {
-    await sendEmail(codeEmail({ to: c.email, code, username, purpose: c.kind === "SIGNUP" ? "signup" : "login" }));
+    await sendEmail(codeEmail({ to: c.email, code, username, purpose: purposeOf(c.kind) }));
   } catch (err) {
     // The new code (probably) never arrived: put the previous code back so the
     // email the user already has keeps working, and let them retry right away.
@@ -266,7 +320,9 @@ export async function redeemChallenge(token: string): Promise<string | null> {
     });
     if (!count) return null;
 
-    if (c.kind === "LOGIN") {
+    // LOGIN: the account whose password was checked. RESET: the account picked
+    // after the code, set by completeReset together with its new password.
+    if (c.kind === "LOGIN" || c.kind === "RESET") {
       if (!c.userId) return null;
       const user = await tx.user.findUnique({
         where: { id: c.userId },
@@ -277,9 +333,14 @@ export async function redeemChallenge(token: string): Promise<string | null> {
       return user.id;
     }
 
+    if (c.kind !== "SIGNUP") return null;
     const p = JSON.parse(c.payload ?? "null") as SignupPayload | null;
     if (!p) return null;
-    // Throws a unique-constraint error if the name/email was taken meanwhile,
+    // Enforce the accounts-per-email cap here too, serialised per address, so
+    // sign-ups started in parallel can't all slip under it.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${c.email}))`;
+    if ((await tx.user.count({ where: { email: c.email } })) >= MAX_ACCOUNTS_PER_EMAIL) return null;
+    // Throws a unique-constraint error if the username was taken meanwhile,
     // which rolls back the consumption above.
     const user = await tx.user.create({
       data: {
@@ -291,5 +352,58 @@ export async function redeemChallenge(token: string): Promise<string | null> {
       },
     });
     return user.id;
+  });
+}
+
+// ---------- Password reset ----------
+
+/** The verified, unfinished reset for this browser, if any, with the accounts it covers. */
+export async function getVerifiedReset() {
+  const c = await currentChallenge();
+  if (!c || c.kind !== "RESET" || !c.verifiedAt || c.consumedAt || c.userId) return null;
+  if (c.verifiedAt.getTime() < Date.now() - RESET_WINDOW_MS) return null;
+  const accounts = await prisma.user.findMany({
+    where: { email: c.email },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, username: true, name: true, createdAt: true, bannedAt: true, suspendedUntil: true, moderationReason: true },
+  });
+  return { email: c.email, maskedEmail: maskEmail(c.email), accounts };
+}
+
+export type ResetResult = { ok: true } | { ok: false; reason: "expired" | "not-yours" | "blocked"; message?: string };
+
+/**
+ * Set a new password on one account covered by the verified reset, exactly
+ * once, and sign that account out everywhere. The challenge then points at the
+ * account with a fresh verification time, so the caller can redeem it for a
+ * session right away.
+ */
+export async function completeReset(userId: string, passwordHash: string): Promise<ResetResult> {
+  const token = await readChallengeToken();
+  if (!token) return { ok: false, reason: "expired" };
+  const c = await prisma.emailChallenge.findUnique({ where: { tokenHash: hashToken(token) } });
+  if (!c || c.kind !== "RESET" || !c.verifiedAt || c.consumedAt || c.userId) return { ok: false, reason: "expired" };
+  if (c.verifiedAt.getTime() < Date.now() - RESET_WINDOW_MS) return { ok: false, reason: "expired" };
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, bannedAt: true, suspendedUntil: true, moderationReason: true },
+  });
+  if (!user || user.email !== c.email) return { ok: false, reason: "not-yours" };
+  const status = accountStatus(user);
+  if (status.state !== "active") return { ok: false, reason: "blocked", message: blockedMessage(status) ?? undefined };
+
+  const now = new Date();
+  return prisma.$transaction(async (tx) => {
+    // Claim the reset first (single use: only while no account has been picked).
+    const { count } = await tx.emailChallenge.updateMany({
+      where: { id: c.id, userId: null, consumedAt: null },
+      data: { userId: user.id, verifiedAt: now },
+    });
+    if (!count) return { ok: false, reason: "expired" } as const;
+    await tx.user.update({ where: { id: user.id }, data: { passwordHash, sessionsValidAfter: now } });
+    // Any other half-finished sign-ins for this account are void now.
+    await tx.emailChallenge.deleteMany({ where: { userId: user.id, consumedAt: null, id: { not: c.id } } });
+    return { ok: true } as const;
   });
 }

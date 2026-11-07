@@ -20,7 +20,8 @@ model User {
   username      String    @unique
   name          String?
   // Verified at sign-up with an emailed code; every login sends a code here too.
-  email         String    @unique
+  // One address may own several accounts (picked after a password-reset code).
+  email         String
   emailVerified DateTime?
   passwordHash  String
   createdAt     DateTime  @default(now())
@@ -42,6 +43,8 @@ model User {
   challenges      EmailChallenge[]
   adminGrant       SiteAdmin?  @relation("AdminGrant")
   adminGrantsGiven SiteAdmin[] @relation("AdminGrantsGiven")
+
+  @@index([email])
 }
 
 // Admin rights granted by another admin (see src/lib/admin-rules.ts). Admins
