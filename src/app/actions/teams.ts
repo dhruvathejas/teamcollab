@@ -34,6 +34,8 @@ import {
   visibilitySchema,
 } from "@/lib/validation";
 import { stripNul } from "@/lib/validation";
+import { adminProtectionBlocks, type AdminInfo } from "@/lib/admin-rules";
+import { ADMIN_SELECT, adminInfoOf } from "@/lib/moderation";
 import { pickValues, type FormState } from "./types";
 
 function isUniqueViolation(err: unknown): boolean {
@@ -281,12 +283,29 @@ async function addMember(tx: Prisma.TransactionClient, teamId: string, userId: s
 
 // ---------- Members ----------
 
+/**
+ * True if the actor may act on this member only through site-admin powers and
+ * the member is an admin protected from that (see adminProtectionBlocks).
+ */
+async function blockedByAdminProtection(
+  actor: { id: string; admin: AdminInfo },
+  team: { ownerId: string },
+  memberUserId: string,
+): Promise<boolean> {
+  if (!actor.admin) return false;
+  const member = await prisma.user.findUnique({ where: { id: memberUserId }, select: ADMIN_SELECT });
+  return adminProtectionBlocks(actor, team.ownerId === actor.id, { id: memberUserId, admin: adminInfoOf(member) });
+}
+
 export async function changeMemberRole(formData: FormData) {
   const membership = await prisma.membership.findUnique({ where: { id: str(formData, "membershipId") } });
   const next = str(formData, "role");
   if (!membership || !isRole(membership.role) || !isRole(next)) return refresh();
-  const { role } = await teamAndRole(membership.teamId);
+  const { user, team, role } = await teamAndRole(membership.teamId);
   if (!canChangeRole(role, membership.role, next as Role)) throw new Error("Not allowed.");
+  if (await blockedByAdminProtection(user, team, membership.userId)) {
+    throw new Error("This admin's team role can't be changed by other admins.");
+  }
   await prisma.membership.update({ where: { id: membership.id }, data: { role: next } });
   refresh();
 }
@@ -294,8 +313,13 @@ export async function changeMemberRole(formData: FormData) {
 export async function removeMember(formData: FormData) {
   const membership = await prisma.membership.findUnique({ where: { id: str(formData, "membershipId") } });
   if (!membership || !isRole(membership.role)) return refresh();
-  const { role } = await teamAndRole(membership.teamId);
+  const { user, team, role } = await teamAndRole(membership.teamId);
   if (!canRemoveMember(role, membership.role)) throw new Error("Not allowed.");
+  // Site admins who aren't the team's real owner act through admin powers here
+  // (even after "Join as admin"), so a protected admin can't be kicked.
+  if (await blockedByAdminProtection(user, team, membership.userId)) {
+    throw new Error("This account can't be removed from teams by other admins.");
+  }
   await prisma.membership.delete({ where: { id: membership.id } });
   refresh();
 }

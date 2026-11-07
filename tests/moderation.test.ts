@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { accountStatus, blockedMessage, isSiteAdmin, sessionIsValid, siteAdminEmails } from "@/lib/moderation";
+import { accountStatus, blockedMessage, isRootAdmin, sessionIsValid, siteAdminEmails } from "@/lib/moderation";
 
 const verified = new Date("2026-01-01");
 
 describe("site admins", () => {
   const admins = siteAdminEmails("Boss@Example.com, second@example.com");
   it("matches configured emails case-insensitively", () => {
-    expect(isSiteAdmin({ email: "boss@example.com", emailVerified: verified }, admins)).toBe(true);
-    expect(isSiteAdmin({ email: "SECOND@example.com", emailVerified: verified }, admins)).toBe(true);
+    expect(isRootAdmin({ email: "boss@example.com", emailVerified: verified }, admins)).toBe(true);
+    expect(isRootAdmin({ email: "SECOND@example.com", emailVerified: verified }, admins)).toBe(true);
   });
   it("requires a verified email and an exact address", () => {
-    expect(isSiteAdmin({ email: "boss@example.com", emailVerified: null }, admins)).toBe(false);
-    expect(isSiteAdmin({ email: "boss+x@example.com", emailVerified: verified }, admins)).toBe(false);
-    expect(isSiteAdmin(null, admins)).toBe(false);
+    expect(isRootAdmin({ email: "boss@example.com", emailVerified: null }, admins)).toBe(false);
+    expect(isRootAdmin({ email: "boss+x@example.com", emailVerified: verified }, admins)).toBe(false);
+    expect(isRootAdmin(null, admins)).toBe(false);
   });
   it("defaults to the owner's address", () => {
     expect(siteAdminEmails(undefined)).toEqual(new Set(["dhruvathejasb@gmail.com"]));
@@ -48,5 +48,22 @@ describe("sessionIsValid", () => {
     expect(sessionIsValid(cut.getTime() - 1, cut)).toBe(false);
     expect(sessionIsValid(undefined, cut)).toBe(false);
     expect(sessionIsValid(cut.getTime() + 1000, cut)).toBe(true);
+  });
+});
+
+import { adminInfoOf } from "@/lib/moderation";
+
+describe("adminInfoOf", () => {
+  const admins = siteAdminEmails("boss@example.com");
+  const grant = { canAddAdmins: false, suspendable: true, bannable: false, deletable: true, addedById: "x" };
+  it("root wins over a grant", () => {
+    expect(adminInfoOf({ email: "boss@example.com", emailVerified: verified, adminGrant: grant }, admins)).toEqual({ kind: "root" });
+  });
+  it("reads granted options", () => {
+    expect(adminInfoOf({ email: "a@example.com", emailVerified: verified, adminGrant: grant }, admins)).toEqual({ kind: "granted", ...grant });
+  });
+  it("is null for everyone else", () => {
+    expect(adminInfoOf({ email: "a@example.com", emailVerified: verified, adminGrant: null }, admins)).toBeNull();
+    expect(adminInfoOf(null, admins)).toBeNull();
   });
 });

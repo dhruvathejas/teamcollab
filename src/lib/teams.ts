@@ -1,7 +1,7 @@
 import "server-only";
 import { cache } from "react";
 import { prisma } from "@/lib/db";
-import { isSiteAdmin } from "@/lib/moderation";
+import { ADMIN_SELECT, adminInfoOf } from "@/lib/moderation";
 import { canViewTeam, isRole, type Role } from "@/lib/permissions";
 
 /** The user's actual membership role in the team, ignoring site-admin powers. */
@@ -23,13 +23,12 @@ export async function getRole(teamId: string, userId: string | undefined): Promi
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      email: true,
-      emailVerified: true,
+      ...ADMIN_SELECT,
       memberships: { where: { teamId }, select: { role: true } },
     },
   });
   if (!user) return null;
-  if (isSiteAdmin(user)) return "OWNER";
+  if (adminInfoOf(user)) return "OWNER";
   const role = user.memberships[0]?.role;
   return role && isRole(role) ? role : null;
 }

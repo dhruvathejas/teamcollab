@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { Avatar, Badge, Card, CardHeader, EmptyState, Notice, PageSkeleton, buttonStyles, inputStyles } from "@/components/ui";
 import { prisma } from "@/lib/db";
-import { accountStatus, isSiteAdmin } from "@/lib/moderation";
+import { accountStatus, adminInfoOf, siteAdminEmails } from "@/lib/moderation";
 import { requireUser } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Admin" };
@@ -37,8 +37,24 @@ async function Admin({ searchParams }: { searchParams: PageProps<"/admin">["sear
       : undefined,
     orderBy: { createdAt: "desc" },
     take: 100,
-    include: { _count: { select: { memberships: true, ownedTeams: true } } },
+    include: {
+      adminGrant: true,
+      _count: { select: { memberships: true, ownedTeams: true } },
+    },
   });
+
+  // Everyone with admin rights: root admins (SITE_ADMIN_EMAILS) and granted ones.
+  const [roots, granted] = await Promise.all([
+    prisma.user.findMany({
+      where: { email: { in: [...siteAdminEmails()] }, emailVerified: { not: null } },
+      select: { id: true, username: true },
+    }),
+    prisma.siteAdmin.findMany({
+      orderBy: { createdAt: "asc" },
+      include: { user: { select: { id: true, username: true } }, addedBy: { select: { username: true } } },
+    }),
+  ]);
+  const rootIds = new Set(roots.map((r) => r.id));
 
   return (
     <div className="space-y-6">
@@ -49,6 +65,32 @@ async function Admin({ searchParams }: { searchParams: PageProps<"/admin">["sear
         </p>
       </div>
       {deleted && <Notice tone="success">Account @{deleted} was deleted.</Notice>}
+      <Card>
+        <CardHeader title={`Admins (${roots.length + granted.filter((g) => !rootIds.has(g.userId)).length})`} />
+        <ul className="divide-y divide-line">
+          {roots.map((r) => (
+            <li key={r.id}>
+              <Link href={`/admin/users/${r.id}`} className="flex items-center gap-3 px-5 py-2.5 text-sm hover:bg-surface-2">
+                <span className="flex-1 font-medium">@{r.username}{r.id === admin.id && <span className="font-normal text-muted"> (you)</span>}</span>
+                <Badge tone="accent">Root admin</Badge>
+              </Link>
+            </li>
+          ))}
+          {granted.filter((g) => !rootIds.has(g.userId)).map((g) => (
+            <li key={g.userId}>
+              <Link href={`/admin/users/${g.userId}`} className="flex flex-wrap items-center gap-3 px-5 py-2.5 text-sm hover:bg-surface-2">
+                <span className="flex-1 font-medium">@{g.user.username}{g.userId === admin.id && <span className="font-normal text-muted"> (you)</span>}</span>
+                <span className="text-xs text-muted">
+                  {g.addedBy ? `added by @${g.addedBy.username}` : "added by a deleted account"}
+                  {g.canAddAdmins ? " · can add admins" : ""}
+                  {!g.suspendable || !g.bannable || !g.deletable ? " · protected" : ""}
+                </span>
+                <Badge tone="accent">Admin</Badge>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </Card>
       <form className="flex gap-2" role="search">
         <label htmlFor="q" className="sr-only">Search accounts</label>
         <input id="q" name="q" defaultValue={q} placeholder="Search by username, email or name" className={inputStyles} />
@@ -70,7 +112,10 @@ async function Admin({ searchParams }: { searchParams: PageProps<"/admin">["sear
                       <span className="font-medium">@{u.username}</span>
                       <span className="block truncate text-xs text-muted">{u.email}</span>
                     </span>
-                    {isSiteAdmin(u) && <Badge tone="accent">Site admin</Badge>}
+                    {(() => {
+                      const info = adminInfoOf(u);
+                      return info ? <Badge tone="accent">{info.kind === "root" ? "Root admin" : "Admin"}</Badge> : null;
+                    })()}
                     {status.state === "banned" && <Badge tone="danger">Banned</Badge>}
                     {status.state === "suspended" && <Badge tone="danger">Suspended</Badge>}
                     <span className="text-xs text-muted">

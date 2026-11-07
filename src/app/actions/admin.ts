@@ -3,14 +3,27 @@
 import { notFound, redirect } from "next/navigation";
 import { refresh, revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { isSiteAdmin } from "@/lib/moderation";
+import { Prisma } from "@prisma/client";
+import {
+  canLiftRestriction,
+  canMakeAdmin,
+  canManageAdmin,
+  canModerate,
+  grantError,
+  resolveOptions,
+  type AdminOptions,
+  type ModerationAction,
+  type Person,
+} from "@/lib/admin-rules";
+import { adminInfoOf } from "@/lib/moderation";
 import { requireUser } from "@/lib/session";
 import { deleteTeamBlobs } from "@/lib/storage";
 import { stripNul } from "@/lib/validation";
 import type { FormState } from "./types";
 
-// Site-admin moderation. Every action re-checks that the caller is a site
-// admin, and site admins themselves can never be moderated.
+// Site-admin moderation and admin management. Every action re-checks the
+// caller's admin rights against the target's current state in the database,
+// using the rules in src/lib/admin-rules.ts.
 
 async function requireSiteAdmin() {
   const admin = await requireUser("/admin");
@@ -23,13 +36,45 @@ function field(formData: FormData, key: string): string {
   return typeof v === "string" ? v : "";
 }
 
-/** Load the account being moderated; refuses site admins (including yourself). */
-async function target(formData: FormData) {
-  await requireSiteAdmin();
-  const user = await prisma.user.findUnique({ where: { id: field(formData, "userId") } });
-  if (!user) return { error: "That account no longer exists." } as const;
-  if (isSiteAdmin(user)) return { error: "Site admins can't be moderated." } as const;
-  return { user } as const;
+/** The account an action targets, as a rules Person plus its row. */
+async function loadTarget(formData: FormData) {
+  const user = await prisma.user.findUnique({
+    where: { id: field(formData, "userId") },
+    include: { adminGrant: true },
+  });
+  if (!user) return null;
+  const person: Person = { id: user.id, admin: adminInfoOf({ ...user, adminGrant: user.adminGrant }) };
+  return { user, person };
+}
+
+const REFUSED: Record<ModerationAction, string> = {
+  suspend: "This account can't be suspended.",
+  ban: "This account can't be banned.",
+  delete: "This account can't be deleted.",
+  signout: "This account can't be signed out by other admins.",
+  removeFromTeam: "This account can't be removed from teams by other admins.",
+};
+
+/** Load the account to moderate and check `action` is allowed on it. */
+async function target(formData: FormData, action: ModerationAction) {
+  const admin = await requireSiteAdmin();
+  const t = await loadTarget(formData);
+  if (!t) return { error: "That account no longer exists." } as const;
+  if (!canModerate({ id: admin.id, admin: admin.admin }, t.person, action)) {
+    return { error: t.user.id === admin.id ? "You can't moderate your own account." : REFUSED[action] } as const;
+  }
+  return { user: t.user } as const;
+}
+
+/** Load the account whose ban or suspension is being lifted (canLiftRestriction). */
+async function liftTarget(formData: FormData) {
+  const admin = await requireSiteAdmin();
+  const t = await loadTarget(formData);
+  if (!t) return { error: "That account no longer exists." } as const;
+  if (!canLiftRestriction({ id: admin.id, admin: admin.admin }, t.person)) {
+    return { error: "You can't change your own account's restrictions." } as const;
+  }
+  return { user: t.user } as const;
 }
 
 function reasonFrom(formData: FormData): string | null {
@@ -46,7 +91,7 @@ async function signOutEverywhere(userId: string, now: Date) {
 }
 
 export async function banUser(_prev: FormState, formData: FormData): Promise<FormState> {
-  const t = await target(formData);
+  const t = await target(formData, "ban");
   if ("error" in t) return { error: t.error };
   const now = new Date();
   await prisma.user.update({
@@ -59,7 +104,7 @@ export async function banUser(_prev: FormState, formData: FormData): Promise<For
 }
 
 export async function unbanUser(_prev: FormState, formData: FormData): Promise<FormState> {
-  const t = await target(formData);
+  const t = await liftTarget(formData);
   if ("error" in t) return { error: t.error };
   await prisma.user.update({
     where: { id: t.user.id },
@@ -70,7 +115,7 @@ export async function unbanUser(_prev: FormState, formData: FormData): Promise<F
 }
 
 export async function suspendUser(_prev: FormState, formData: FormData): Promise<FormState> {
-  const t = await target(formData);
+  const t = await target(formData, "suspend");
   if ("error" in t) return { error: t.error };
   const raw = field(formData, "until");
   const until = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(`${raw}T00:00:00Z`) : null;
@@ -91,7 +136,7 @@ export async function suspendUser(_prev: FormState, formData: FormData): Promise
 }
 
 export async function liftSuspension(_prev: FormState, formData: FormData): Promise<FormState> {
-  const t = await target(formData);
+  const t = await liftTarget(formData);
   if ("error" in t) return { error: t.error };
   await prisma.user.update({
     where: { id: t.user.id },
@@ -102,7 +147,7 @@ export async function liftSuspension(_prev: FormState, formData: FormData): Prom
 }
 
 export async function forceSignOut(_prev: FormState, formData: FormData): Promise<FormState> {
-  const t = await target(formData);
+  const t = await target(formData, "signout");
   if ("error" in t) return { error: t.error };
   await signOutEverywhere(t.user.id, new Date());
   refresh();
@@ -115,7 +160,7 @@ export async function forceSignOut(_prev: FormState, formData: FormData): Promis
  * files it uploaded to other teams stay, without an uploader.
  */
 export async function deleteUser(_prev: FormState, formData: FormData): Promise<FormState> {
-  const t = await target(formData);
+  const t = await target(formData, "delete");
   if ("error" in t) return { error: t.error };
   if (field(formData, "confirm").trim() !== t.user.username) {
     return { fieldErrors: { confirm: `Type "${t.user.username}" to confirm.` } };
@@ -133,6 +178,80 @@ export async function deleteUser(_prev: FormState, formData: FormData): Promise<
   redirect(`/admin?deleted=${encodeURIComponent(t.user.username)}`);
 }
 
+// ---------- Admins ----------
+
+function optionsFrom(formData: FormData): AdminOptions {
+  const on = (k: string) => formData.get(k) === "on";
+  return {
+    canAddAdmins: on("canAddAdmins"),
+    suspendable: on("suspendable"),
+    bannable: on("bannable"),
+    deletable: on("deletable"),
+  };
+}
+
+export async function makeAdmin(_prev: FormState, formData: FormData): Promise<FormState> {
+  const admin = await requireSiteAdmin();
+  const actor: Person = { id: admin.id, admin: admin.admin };
+  const t = await loadTarget(formData);
+  if (!t) return { error: "That account no longer exists." };
+  if (!canMakeAdmin(actor, t.person)) {
+    return { error: t.person.admin ? `@${t.user.username} is already an admin.` : "You can't add admins." };
+  }
+  const options = resolveOptions(actor, optionsFrom(formData), null);
+  const problem = grantError(actor, options);
+  if (problem) return { error: problem };
+  try {
+    await prisma.siteAdmin.create({ data: { userId: t.user.id, addedById: admin.id, ...options } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return { error: `@${t.user.username} is already an admin.` };
+    }
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      return { error: "That account no longer exists." };
+    }
+    throw err;
+  }
+  refresh();
+  return { success: `@${t.user.username} is now an admin.` };
+}
+
+export async function updateAdmin(_prev: FormState, formData: FormData): Promise<FormState> {
+  const admin = await requireSiteAdmin();
+  const actor: Person = { id: admin.id, admin: admin.admin };
+  const t = await loadTarget(formData);
+  if (!t) return { error: "That account no longer exists." };
+  if (!t.user.adminGrant) return { error: `@${t.user.username} is no longer an admin. Reload the page.` };
+  if (!canManageAdmin(actor, t.person)) return { error: "Only the admin who added them, or a root admin, can change this admin." };
+  // Protections the actor can't grant keep their stored value, so a stale form
+  // can't silently undo a change someone with more rights just made.
+  const options = resolveOptions(actor, optionsFrom(formData), t.user.adminGrant);
+  const problem = grantError(actor, options, t.user.adminGrant);
+  if (problem) return { error: problem };
+  const { count } = await prisma.siteAdmin.updateMany({ where: { userId: t.user.id }, data: options });
+  if (!count) return { error: `@${t.user.username} is no longer an admin. Reload the page.` };
+  refresh();
+  return { success: `Saved @${t.user.username}'s admin options.` };
+}
+
+export async function removeAdmin(_prev: FormState, formData: FormData): Promise<FormState> {
+  const admin = await requireSiteAdmin();
+  const t = await loadTarget(formData);
+  if (!t) return { error: "That account no longer exists." };
+  if (!t.user.adminGrant) return { error: `@${t.user.username} is no longer an admin.` };
+  if (!canManageAdmin({ id: admin.id, admin: admin.admin }, t.person)) {
+    return { error: "Only the admin who added them, or a root admin, can remove this admin." };
+  }
+  // Their appointees now answer to whoever removed them, so being made admin
+  // again later doesn't hand back control over them.
+  await prisma.$transaction([
+    prisma.siteAdmin.updateMany({ where: { addedById: t.user.id }, data: { addedById: admin.id } }),
+    prisma.siteAdmin.deleteMany({ where: { userId: t.user.id } }),
+  ]);
+  refresh();
+  return { success: `@${t.user.username} is no longer an admin.` };
+}
+
 const ACTIONS = {
   ban: banUser,
   unban: unbanUser,
@@ -140,6 +259,9 @@ const ACTIONS = {
   lift: liftSuspension,
   signout: forceSignOut,
   delete: deleteUser,
+  "make-admin": makeAdmin,
+  "update-admin": updateAdmin,
+  "remove-admin": removeAdmin,
 } as const;
 
 /** Single entry point for the moderation panel, so one result message survives the page refresh. */

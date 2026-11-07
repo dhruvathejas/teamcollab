@@ -19,6 +19,8 @@ import {
   isRole,
   type Role,
 } from "@/lib/permissions";
+import { adminProtectionBlocks } from "@/lib/admin-rules";
+import { ADMIN_SELECT, adminInfoOf } from "@/lib/moderation";
 import { requireUser } from "@/lib/session";
 import { getTeamForViewer } from "@/lib/teams";
 
@@ -62,9 +64,14 @@ async function Settings({ params }: { params: PageProps<"/t/[slug]/settings">["p
     prisma.membership.findMany({
       where: { teamId: team.id },
       orderBy: { joinedAt: "asc" },
-      include: { user: { select: { id: true, username: true, name: true } } },
+      include: { user: { select: { id: true, username: true, name: true, ...ADMIN_SELECT } } },
     }),
   ]);
+  const actor = { id: user.id, admin: user.admin };
+  const isRealOwner = team.ownerId === user.id;
+  // Mirrors the server: site admins acting through admin powers can't touch protected admins.
+  const protectedFromMe = (m: (typeof members)[number]) =>
+    adminProtectionBlocks(actor, isRealOwner, { id: m.user.id, admin: adminInfoOf(m.user) });
 
   return (
     <div className="space-y-6">
@@ -138,7 +145,7 @@ async function Settings({ params }: { params: PageProps<"/t/[slug]/settings">["p
                 {target !== "MEMBER" && (
                   <Badge tone="accent">{target === "OWNER" ? "Owner" : "Admin"}</Badge>
                 )}
-                {canChangeRole(role, target, toggleTo) && (
+                {canChangeRole(role, target, toggleTo) && !protectedFromMe(m) && (
                   <form action={changeMemberRole}>
                     <input type="hidden" name="membershipId" value={m.id} />
                     <input type="hidden" name="role" value={toggleTo} />
@@ -147,7 +154,7 @@ async function Settings({ params }: { params: PageProps<"/t/[slug]/settings">["p
                     </SubmitButton>
                   </form>
                 )}
-                {canRemoveMember(role, target) && (
+                {canRemoveMember(role, target) && !protectedFromMe(m) && (
                   <form action={removeMember}>
                     <input type="hidden" name="membershipId" value={m.id} />
                     <SubmitButton variant="ghost" className="!px-2 !py-1 text-xs text-danger">Remove</SubmitButton>
