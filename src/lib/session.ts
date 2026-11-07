@@ -4,7 +4,8 @@ import { redirect } from "next/navigation";
 import { connection } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/db";
-import { accountStatus, isSiteAdmin, sessionIsValid } from "@/lib/moderation";
+import type { AdminInfo } from "@/lib/admin-rules";
+import { ADMIN_SELECT, accountStatus, adminInfoOf, sessionIsValid } from "@/lib/moderation";
 
 export type CurrentUser = {
   id: string;
@@ -12,6 +13,8 @@ export type CurrentUser = {
   name: string | null;
   /** Site administrator: owner powers over every team, can moderate accounts. */
   siteAdmin: boolean;
+  /** Root (SITE_ADMIN_EMAILS) or granted admin, with options; null if not an admin. */
+  admin: AdminInfo;
 };
 
 /**
@@ -31,8 +34,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
       id: true,
       username: true,
       name: true,
-      email: true,
-      emailVerified: true,
+      ...ADMIN_SELECT,
       bannedAt: true,
       suspendedUntil: true,
       moderationReason: true,
@@ -44,7 +46,8 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   if (!user) return null;
   if (accountStatus(user).state !== "active") return null;
   if (!sessionIsValid(session?.loginAt, user.sessionsValidAfter)) return null;
-  return { id: user.id, username: user.username, name: user.name, siteAdmin: isSiteAdmin(user) };
+  const admin = adminInfoOf(user);
+  return { id: user.id, username: user.username, name: user.name, siteAdmin: admin !== null, admin };
 });
 
 /**

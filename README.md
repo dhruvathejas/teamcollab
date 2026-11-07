@@ -30,22 +30,44 @@ A way for teams with ambitions to collaborate.
 | Promote/demote admins, change name/license/visibility, delete team | ✓ | – | – | – |
 | Request to join | – | – | – | public teams |
 
-### Site admin
+### Site admins
 
-The account whose verified email is listed in `SITE_ADMIN_EMAILS` (default:
-`dhruvathejasb@gmail.com`) is a site admin. A site admin:
+There are two kinds of admin:
 
-- acts as the **owner of every team**, private ones included: open any team, change
-  its settings, remove members, delete it, and **join** it directly ("Join as admin");
-- gets an **Admin** link in the header, opening `/admin` to search every account and, for
-  any non-admin account, **suspend** it until a date, **ban** it, **sign it out
-  everywhere**, **remove it from a team**, or **delete** it (teams it owns are deleted
-  with it).
+- **Root admins** are the verified accounts whose email is in `SITE_ADMIN_EMAILS`
+  (default `dhruvathejasb@gmail.com`). They have every power, manage every other
+  admin, and can't be suspended, banned, signed out, deleted or removed from the app.
+- **Added admins** are made admin by another admin, who chooses four options:
+  **can add other admins**, **can be suspended** (which also lets other admins sign
+  them out and remove them from teams), **can be banned**, and **can be deleted**.
 
-Banned and suspended accounts are signed out immediately and can't log in (they see
-the reason after entering the correct password). Their teams and files stay visible.
-Site admins themselves can't be moderated. Admin rights only apply once that address
-has been verified by sign-up, so nobody else can claim them by typing it in.
+Every admin:
+
+- acts as the **owner of every team**, private ones included, and can **join** any
+  team directly ("Join as admin");
+- gets an **Admin** link in the header, opening `/admin` to see all admins and search
+  every account. From there they can suspend an account until a date, ban it, sign it
+  out everywhere, remove it from a team, or delete it (teams it owns are deleted with
+  it), as far as that account's options allow.
+
+The rules (in [`src/lib/admin-rules.ts`](src/lib/admin-rules.ts)):
+
+- Only admins who can add admins can make someone an admin.
+- An admin can only give protections they have themselves. An admin who can be banned
+  can't make someone unbannable. Protections they can't give keep their current value.
+- An admin's options can be changed, and their admin rights removed, only by the admin
+  who added them or by a root admin. A removed admin's appointees pass to whoever
+  removed them.
+- Nobody can moderate or manage their own account.
+- Lifting a ban or suspension is always allowed, even for protected admins.
+- Protected admins can't be kicked from a team, or have their team role changed, by
+  admins acting through admin powers. That holds even after "Join as admin"; only the
+  team's real owner can do it.
+
+Banned and suspended accounts are signed out immediately and can't log in. They see
+the reason only after entering the correct password. Their teams and files stay
+visible. Admin rights only apply to verified accounts, so nobody can claim them by
+typing someone else's email.
 
 The rules live in [`src/lib/permissions.ts`](src/lib/permissions.ts) and are enforced in
 every server action and route handler.

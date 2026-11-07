@@ -40,6 +40,28 @@ model User {
   invitesSent     Invite[]         @relation("Inviter")
   uploadedFiles   TeamFile[]
   challenges      EmailChallenge[]
+  adminGrant       SiteAdmin?  @relation("AdminGrant")
+  adminGrantsGiven SiteAdmin[] @relation("AdminGrantsGiven")
+}
+
+// Admin rights granted by another admin (see src/lib/admin-rules.ts). Admins
+// listed in SITE_ADMIN_EMAILS ("root") don't need a row.
+model SiteAdmin {
+  userId       String   @id
+  canAddAdmins Boolean  @default(false)
+  suspendable  Boolean  @default(true)
+  bannable     Boolean  @default(true)
+  deletable    Boolean  @default(true)
+  // Who granted it; they (and root admins) manage this admin. Null if that
+  // account was deleted, leaving only root admins able to manage it.
+  addedById    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user    User  @relation("AdminGrant", fields: [userId], references: [id], onDelete: Cascade)
+  addedBy User? @relation("AdminGrantsGiven", fields: [addedById], references: [id], onDelete: SetNull)
+
+  @@index([addedById])
 }
 
 // A pending two-factor step: a 6-digit code emailed after the password check

@@ -3,11 +3,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { removeMember } from "@/app/actions/teams";
-import { ModerationPanel } from "@/components/admin/moderation-forms";
+import { ModerationPanel, type AdminSection } from "@/components/admin/moderation-forms";
 import { SubmitButton } from "@/components/submit-button";
 import { Avatar, Badge, Card, CardHeader, EmptyState, PageSkeleton } from "@/components/ui";
+import { canLiftRestriction, canMakeAdmin, canManageAdmin, canModerate, grantableProtections, optionsOf, type Person } from "@/lib/admin-rules";
 import { prisma } from "@/lib/db";
-import { accountStatus, isSiteAdmin } from "@/lib/moderation";
+import { accountStatus, adminInfoOf } from "@/lib/moderation";
 import { requireUser } from "@/lib/session";
 
 export const metadata: Metadata = { title: "Account · Admin" };
@@ -24,12 +25,13 @@ const fmt = (d: Date) => d.toLocaleString("en", { dateStyle: "medium", timeStyle
 
 async function AdminUser({ params }: { params: PageProps<"/admin/users/[id]">["params"] }) {
   const { id } = await params;
-  const admin = await requireUser(`/admin/users/${id}`);
-  if (!admin.siteAdmin) notFound();
+  const me = await requireUser(`/admin/users/${id}`);
+  if (!me.siteAdmin) notFound();
 
   const user = await prisma.user.findUnique({
     where: { id },
     include: {
+      adminGrant: { include: { addedBy: { select: { username: true } } } },
       memberships: {
         orderBy: { joinedAt: "asc" },
         include: { team: { select: { name: true, slug: true, visibility: true } } },
@@ -38,9 +40,30 @@ async function AdminUser({ params }: { params: PageProps<"/admin/users/[id]">["p
   });
   if (!user) notFound();
 
+  const actor: Person = { id: me.id, admin: me.admin };
+  const target: Person = { id: user.id, admin: adminInfoOf(user) };
   const status = accountStatus(user);
-  const protectedAccount = isSiteAdmin(user);
   const owned = user.memberships.filter((m) => m.role === "OWNER").map((m) => m.team.name);
+  const allowed = {
+    suspend: canModerate(actor, target, "suspend"),
+    ban: canModerate(actor, target, "ban"),
+    delete: canModerate(actor, target, "delete"),
+    signout: canModerate(actor, target, "signout"),
+    removeFromTeam: canModerate(actor, target, "removeFromTeam"),
+    lift: canLiftRestriction(actor, target),
+  };
+
+  let adminSection: AdminSection = { mode: "none" };
+  if (target.admin?.kind === "root") adminSection = { mode: "root" };
+  else if (target.admin?.kind === "granted") {
+    const options = optionsOf(target.admin)!;
+    const addedBy = user.adminGrant?.addedBy?.username ?? null;
+    adminSection = canManageAdmin(actor, target)
+      ? { mode: "edit", options, addedBy, grantable: grantableProtections(actor) }
+      : { mode: "view", options, addedBy };
+  } else if (canMakeAdmin(actor, target)) {
+    adminSection = { mode: "make", grantable: grantableProtections(actor) };
+  }
 
   return (
     <div className="space-y-6">
@@ -54,14 +77,14 @@ async function AdminUser({ params }: { params: PageProps<"/admin/users/[id]">["p
             {user.name ? `${user.name} · ` : ""}{user.email} · joined {fmt(user.createdAt)}
           </p>
         </div>
-        {protectedAccount && <Badge tone="accent">Site admin</Badge>}
-        {status.state === "active" && !protectedAccount && <Badge tone="success">Active</Badge>}
+        {target.admin?.kind === "root" && <Badge tone="accent">Root admin</Badge>}
+        {target.admin?.kind === "granted" && <Badge tone="accent">Admin</Badge>}
+        {user.id === me.id && <Badge>You</Badge>}
+        {status.state === "active" && <Badge tone="success">Active</Badge>}
         {status.state === "banned" && <Badge tone="danger">Banned</Badge>}
         {status.state === "suspended" && <Badge tone="danger">Suspended until {fmt(status.until)}</Badge>}
       </div>
-      {status.state !== "active" && status.reason && (
-        <p className="text-sm text-muted">Reason: {status.reason}</p>
-      )}
+      {status.state !== "active" && status.reason && <p className="text-sm text-muted">Reason: {status.reason}</p>}
 
       <Card>
         <CardHeader title={`Teams (${user.memberships.length})`} />
@@ -76,7 +99,7 @@ async function AdminUser({ params }: { params: PageProps<"/admin/users/[id]">["p
                 </Link>
                 {m.team.visibility === "PRIVATE" && <Badge>Private</Badge>}
                 <span className="text-xs text-muted">{m.role === "OWNER" ? "Owner" : m.role === "ADMIN" ? "Admin" : "Member"}</span>
-                {m.role !== "OWNER" && !protectedAccount && (
+                {m.role !== "OWNER" && allowed.removeFromTeam && (
                   <form action={removeMember}>
                     <input type="hidden" name="membershipId" value={m.id} />
                     <SubmitButton variant="ghost" className="!px-2 !py-1 text-xs text-danger">Remove from team</SubmitButton>
@@ -88,13 +111,14 @@ async function AdminUser({ params }: { params: PageProps<"/admin/users/[id]">["p
         )}
       </Card>
 
-      {protectedAccount ? (
-        <Card className="p-5">
-          <p className="text-sm text-muted">Site admin accounts can&apos;t be banned, suspended, signed out or deleted from here.</p>
-        </Card>
-      ) : (
-        <ModerationPanel userId={user.id} username={user.username} status={status.state} ownedTeams={owned} />
-      )}
+      <ModerationPanel
+        userId={user.id}
+        username={user.username}
+        status={status.state}
+        ownedTeams={owned}
+        allowed={allowed}
+        adminSection={user.id === me.id && adminSection.mode !== "root" ? { mode: "none" } : adminSection}
+      />
     </div>
   );
 }
